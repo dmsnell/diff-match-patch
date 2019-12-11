@@ -1163,9 +1163,11 @@ diff_match_patch.prototype.diff_cleanupMerge = function(diffs) {
         text_insert = '';
         break;
     }
-  }
-  if (diffs[diffs.length - 1][1] === '') {
-    diffs.pop();  // Remove the dummy entry at the end.
+
+    // Remove empty groups from diff, including the dummy entry at the end
+    if (diffs[pointer - 1][1] === '') {
+      diffs.splice(pointer - 1, 1);
+    }
   }
 
   // Second pass: look for single edits surrounded on both sides by equalities
@@ -1203,7 +1205,7 @@ diff_match_patch.prototype.diff_cleanupMerge = function(diffs) {
   // If shifts were made, the diff needs reordering and another shift sweep.
   if (changes) {
     this.diff_cleanupMerge(diffs);
-  }
+  } 
 };
 
 

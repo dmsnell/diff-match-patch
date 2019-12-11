@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.LinkedList;
+import java.util.ListIterator;
 import java.util.List;
 import java.util.Map;
 
@@ -565,6 +566,15 @@ public class diff_match_patch_test {
     String[] texts_linemode = diff_rebuildtexts(dmp.diff_main(a, b, true));
     String[] texts_textmode = diff_rebuildtexts(dmp.diff_main(a, b, false));
     assertArrayEquals("diff_main: Overlap line-mode.", texts_textmode, texts_linemode);
+
+    a = "😃🖖🏻🖖🏻🖖🏿\n🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉\n\n.👉🏽👉🏽👉🏽👉🏽👉🏽👉🏽👉🏽👉🏽👉🏽s👈🏿👈🏿👈🏿👈🏿👈🏿👈🏿👈🏿👈🏿👈🏿.\n🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉\n.👉🏽👈🏿👈🏿👈🏿🥶🥶🥶🥶🥶👈🏼🖖🏻👈🏼s🖖🏻👈🏼😋\n\ndasdas\ndasvafksdldasfadsxc vzx";
+    b = "😃🖖🏻🖖🏻🖖🏿\n🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉\nfds\n.👉🏽👉🏽👉🏽👉🏽👉🏽👉🏽👉🏽👉🏽👉🏽s👈🏿👈🏿👈🏿👈🏿👈🏿👈🏿👈🏿👈🏿👈🏿.\n🥶🥶🥶👈🏼🖖🏻😉🖖🏽🖖🏿😉fdsvadsfewdsfdsafsdafsd";
+    diffs = dmp.diff_main(a, b);
+    ListIterator<Diff> li = diffs.listIterator();
+    while (li.hasNext()) {
+      Diff diff = li.next();
+      assertTrue("diff_main: Empty groups.", diff.text.length() > 0);
+    }
 
     // Test null inputs.
     try {

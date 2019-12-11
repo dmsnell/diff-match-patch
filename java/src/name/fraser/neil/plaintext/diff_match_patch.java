@@ -1237,10 +1237,16 @@ public class diff_match_patch {
         prevEqual = thisDiff;
         break;
       }
+      // Remove any empty groups including the dummy at the end
+      if ( pointer.hasPrevious() ) {
+        thisDiff = pointer.previous();
+        if (thisDiff.text.length() == 0) {
+          pointer.remove();
+        } else {
+          pointer.next();
+        }
+      }
       thisDiff = pointer.hasNext() ? pointer.next() : null;
-    }
-    if (diffs.getLast().text.length() == 0) {
-      diffs.removeLast();  // Remove the dummy entry at the end.
     }
 
     /*

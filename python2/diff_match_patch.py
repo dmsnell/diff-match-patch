@@ -988,9 +988,10 @@ class diff_match_patch:
         count_delete = 0
         text_delete = ''
         text_insert = ''
-
-    if diffs[-1][1] == '':
-      diffs.pop()  # Remove the dummy entry at the end.
+      
+      # Remove empty groups, including the dummy at the end
+      if diffs[pointer-1][1] == '':
+        diffs.pop(pointer-1)
 
     # Second pass: look for single edits surrounded on both sides by equalities
     # which can be shifted sideways to eliminate an equality.
