@@ -88,6 +88,111 @@ diff_match_patch.Diff.prototype.toString = function() {
   return this[0] + ',' + this[1];
 };
 
+diff_match_patch.prototype.U_is_high_surrogate = function(c) {
+  var v = c.charCodeAt(0);
+  return v >= 0xD800 && v <= 0xDBFF;
+}
+
+diff_match_patch.prototype.U_is_low_surrogate = function(c) {
+  var v = c.charCodeAt(0);
+  return v >= 0xDC00 && v <= 0xDFFF;
+}
+
+/**
+ * Returns the index of the Nth code point after the given index in a string
+ * 
+ * @param {string} str Given string
+ * @param {number} index Starting index
+ * @param {number} steps Number of code points to advance
+ * @returns {number} Index in string of advanced code point
+ */
+diff_match_patch.prototype.U_advance = function(str, index, steps) {
+  var next = index;
+
+  for (var i = (!steps && 0 !== steps) ? 1 : steps; i > 0; i--) {
+    next += this.U_is_high_surrogate(str[next]) ? 2 : 1;
+  }
+
+  return next;
+}
+
+/**
+ * Returns the index of the Nth code point before the given index in a string
+ * 
+ * @param {string} str Given string
+ * @param {number} index Starting index
+ * @param {number} steps Number of code points to go back
+ * @returns {number} Index in string of advanced code point
+ */
+diff_match_patch.prototype.U_recede = function(str, index, steps) {
+  var prev = index;
+
+  for (var i = (!steps && 0 !== steps) ? 1 : steps; i > 0; i--) {
+    prev -= this.U_is_low_surrogate(str[prev]) ? 2 : 1;
+  }
+
+  return prev;
+}
+
+diff_match_patch.prototype.U_length = function(str) {
+  var length = str.length;
+  var uLength = 0;
+
+  for (var i = 0; i < length; i++) {
+    if (this.U_is_high_surrogate(str[i])) {
+      i++;
+    }
+    uLength++;
+  }
+
+  return uLength;
+}
+
+diff_match_patch.prototype.U_charAt = function(str, index) {
+  return this.U_is_high_surrogate(str[index])
+    ? str[index] + str[index + 1]
+    : str[index];
+}
+
+/**
+ * Returns closest `indexOf` past a Unicode word boundary
+ * 
+ * @param {string} str "Containing" string to search inside
+ * @param {string} searchValue String to search for
+ * @param {number} fromIndex Index at which to start searching
+ * @return {string} Index of first match if found, otherwise -1.
+ *     Skips matches that don't occur on word boundaries.
+ */
+diff_match_patch.prototype.U_indexOf = function(str, searchValue, fromIndex) {
+  var match = str.indexOf(searchValue, fromIndex || 0);
+  var atBoundary = match <= 0 || !this.U_is_low_surrogate(str[match - 1]);
+
+  if ( ! atBoundary ) {
+    console.log("tried to split inside word boundary");
+  }
+
+  return atBoundary
+    ? match
+    : diff_match_patch.prototype.U_indexOf(str, searchValue, match + 1);
+}
+
+/**
+ * Returns closest Unicode boundary at or before a given index in a string
+ * 
+ * @param {string} s Containing string
+ * @param {number} index Candidate index
+ * @returns {number} closest index on or before given index which falls on a Unicode boundary
+ */
+diff_match_patch.prototype.U_boundary = function(s, index) {
+  var i = index;
+
+  while (i >= 0 && this.U_is_low_surrogate(s[i])) {
+    i--;
+    console.log("tried to index a non-boundary");
+  }
+
+  return i;
+}
 
 /**
  * Find the differences between two texts.  Simplifies the problem by stripping
@@ -187,7 +292,7 @@ diff_match_patch.prototype.diff_compute_ = function(text1, text2, checklines,
 
   var longtext = text1.length > text2.length ? text1 : text2;
   var shorttext = text1.length > text2.length ? text2 : text1;
-  var i = longtext.indexOf(shorttext);
+  var i = this.U_indexOf(longtext, shorttext);
   if (i != -1) {
     // Shorter text is inside the longer text (speedup).
     diffs = [new diff_match_patch.Diff(DIFF_INSERT, longtext.substring(0, i)),
@@ -317,7 +422,9 @@ diff_match_patch.prototype.diff_bisect_ = function(text1, text2, deadline) {
   // Cache the text lengths to prevent multiple calls.
   var text1_length = text1.length;
   var text2_length = text2.length;
-  var max_d = Math.ceil((text1_length + text2_length) / 2);
+  var text1_U_length = this.U_length(text1);
+  var text2_U_length = this.U_length(text2);
+  var max_d = Math.ceil((text1_U_length + text2_U_length) / 2);
   var v_offset = max_d;
   var v_length = 2 * max_d;
   var v1 = new Array(v_length);
@@ -330,7 +437,7 @@ diff_match_patch.prototype.diff_bisect_ = function(text1, text2, deadline) {
   }
   v1[v_offset + 1] = 0;
   v2[v_offset + 1] = 0;
-  var delta = text1_length - text2_length;
+  var delta = text1_U_length - text2_U_length;
   // If the total number of characters is odd, then the front path will collide
   // with the reverse path.
   var front = (delta % 2 != 0);
@@ -353,13 +460,15 @@ diff_match_patch.prototype.diff_bisect_ = function(text1, text2, deadline) {
       if (k1 == -d || (k1 != d && v1[k1_offset - 1] < v1[k1_offset + 1])) {
         x1 = v1[k1_offset + 1];
       } else {
-        x1 = v1[k1_offset - 1] + 1;
+        x1 = this.U_advance(text1, v1[k1_offset - 1]);
       }
-      var y1 = x1 - k1;
+      var y1 = k1 > 0 ? this.U_advance(text2, x1, k1) :
+               k2 < 0 ? this.U_recede(text2, x1, k1) :
+                        x1;
       while (x1 < text1_length && y1 < text2_length &&
-             text1.charAt(x1) == text2.charAt(y1)) {
-        x1++;
-        y1++;
+             this.U_charAt(text1, x1) == this.U_charAt(text2, y1)) {
+        x1 = this.U_advance(text1, x1);
+        y1 = this.U_advance(text2, y1);
       }
       v1[k1_offset] = x1;
       if (x1 > text1_length) {
