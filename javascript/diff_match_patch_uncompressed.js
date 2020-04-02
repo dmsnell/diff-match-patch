@@ -88,6 +88,15 @@ diff_match_patch.Diff.prototype.toString = function() {
   return this[0] + ',' + this[1];
 };
 
+diff_match_patch.prototype.isHighSurrogate = function(c) {
+  var v = c.charCodeAt(0);
+  return v >= 0xD800 && v <= 0xDBFF;
+}
+
+diff_match_patch.prototype.isLowSurrogate = function(c) {
+  var v = c.charCodeAt(0);
+  return v >= 0xDC00 && v <= 0xDFFF;
+}
 
 /**
  * Find the differences between two texts.  Simplifies the problem by stripping
@@ -187,13 +196,23 @@ diff_match_patch.prototype.diff_compute_ = function(text1, text2, checklines,
 
   var longtext = text1.length > text2.length ? text1 : text2;
   var shorttext = text1.length > text2.length ? text2 : text1;
+  var shortlength = shorttext.length;
   var i = longtext.indexOf(shorttext);
   if (i != -1) {
+    // skip leading unpaired surrogate
+    if (this.isLowSurrogate(longtext[i])) {
+      shortlength--;
+      i++;
+    }
+    // skip trailing unpaired surrogate
+    if (this.isHighSurrogate(longtext[i + shortlength])) {
+      shortlength--;
+    }
     // Shorter text is inside the longer text (speedup).
     diffs = [new diff_match_patch.Diff(DIFF_INSERT, longtext.substring(0, i)),
              new diff_match_patch.Diff(DIFF_EQUAL, shorttext),
              new diff_match_patch.Diff(DIFF_INSERT,
-                 longtext.substring(i + shorttext.length))];
+                 longtext.substring(i + shortlength))];
     // Swap insertions for deletions if diff is reversed.
     if (text1.length > text2.length) {
       diffs[0][0] = diffs[2][0] = DIFF_DELETE;
@@ -439,6 +458,15 @@ diff_match_patch.prototype.diff_bisect_ = function(text1, text2, deadline) {
  */
 diff_match_patch.prototype.diff_bisectSplit_ = function(text1, text2, x, y,
     deadline) {
+  // backup if we split a surrogate
+  if (
+      x > 0 && x < text1.length && this.isLowSurrogate(text1[x]) &&
+      y > 0 && y < text2.length && this.isLowSurrogate(text2[y])
+  ) {
+    x--;
+    y--;
+  }
+
   var text1a = text1.substring(0, x);
   var text2a = text2.substring(0, y);
   var text1b = text1.substring(x);
@@ -569,6 +597,12 @@ diff_match_patch.prototype.diff_commonPrefix = function(text1, text2) {
     }
     pointermid = Math.floor((pointermax - pointermin) / 2 + pointermin);
   }
+
+  // shorten the prefix if it splits a surrogate
+  if (pointermid > 0 && this.isHighSurrogate(text1[pointermid-1])) {
+    pointermid--;
+  }
+
   return pointermid;
 };
 
@@ -601,6 +635,12 @@ diff_match_patch.prototype.diff_commonSuffix = function(text1, text2) {
     }
     pointermid = Math.floor((pointermax - pointermin) / 2 + pointermin);
   }
+
+  // shorten the suffix if it splits a surrogate
+  if (pointermid < length - 1 && this.isLowSurrogate(text1[pointermid])) {
+    pointermid++;
+  }
+
   return pointermid;
 };
 
@@ -749,6 +789,24 @@ diff_match_patch.prototype.diff_halfMatch_ = function(text1, text2) {
     text1_b = hm[3];
   }
   var mid_common = hm[4];
+
+  // move forward to prevent splitting a surrogate pair
+  if (mid_common.length > 0 && this.isLowSurrogate(mid_common[0])) {
+    text1_a = text1_a + mid_common[0];
+    text2_a = text2_a + mid_common[0];
+    mid_common = mid_common.substring(1);
+  }
+
+  // back up to prevent splitting a surrogate pair
+  if (
+    text1_b.length > 0 && this.isLowSurrogate(text1_b[0]) &&
+    text2_b.length > 0 && this.isLowSurrogate(text2_b[0])
+  ) {
+    text1_b = mid_common[mid_common.length - 1] + text1_b;
+    text2_b = mid_common[mid_common.length - 1] + text2_b;
+    mid_common = mid_common.substring(0, -1);
+  }
+
   return [text1_a, text1_b, text2_a, text2_b, mid_common];
 };
 
