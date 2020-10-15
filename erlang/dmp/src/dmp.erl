@@ -4,6 +4,9 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(S(X), <<X/utf16>>).
+
+-type diff_op() :: equal | delete | insert.
+
 -record(half_match, {
     l_prefix :: binary(),
     l_suffix :: binary(),
@@ -21,6 +24,19 @@
 %% Interface functions
 
 %% Internal functions
+
+-spec chars_to_lines(CharDiffs, Lookup) -> LineDiffs
+    when CharDiffs :: list({diff_op(), binary()}),
+         Lookup    :: tuple(),
+         LineDiffs :: list({diff_op(), binary()}).
+
+chars_to_lines(Diffs, Lookup) ->
+    [{Op, ctl_line(Chars, Lookup, [])} || {Op, Chars} <- Diffs].
+
+ctl_line(<<>>, _Lookup, Lines) ->
+    erlang:list_to_binary(lists:reverse(Lines));
+ctl_line(<<N:16, Rest/binary>>, Lookup, Lines) ->
+    ctl_line(Rest, Lookup, [erlang:element(N + 1, Lookup) | Lines]).
 
 -spec lines_to_chars(Left :: binary(), Right :: binary()) -> #line_hashes{}.
 
@@ -347,6 +363,34 @@ lines_to_chars_test_() -> [
                 lookup = erlang:list_to_tuple([<<>> | Lines])
             }, lines_to_chars(Text, ?S("")))
         ]
+    end
+].
+
+chars_to_lines_test_() -> [
+    begin
+        CDiffs  = [{equal, <<1:16, 2:16, 1:16>>}, {insert, <<2:16, 1:16, 2:16>>}],
+        Lookup1 = {<<>>, ?S("alpha\n"), ?S("beta\n")},
+        LDiffs  = [{equal, ?S("alpha\nbeta\nalpha\n")}, {insert, ?S("beta\nalpha\nbeta\n")}],
+        ?_assertEqual(LDiffs, chars_to_lines(CDiffs, Lookup1))
+    end,
+    begin
+        N2      = 3,
+        Chars2  = <<<<C:16>> || C <- lists:seq(1, N2)>>,
+        Lines2  = [<<(unicode:characters_to_binary(io_lib:format("~p", [I]), utf8, utf16))/binary, "\n"/utf16>> || I <- lists:seq(1, N2)],
+        Text2   = <<<<Line/binary>> || Line <- Lines2>>,
+        Lookup2 = erlang:list_to_tuple([<<>> | Lines2]),
+        [
+            ?_assertEqual(N2, length(Lines2)),
+            ?_assertEqual(N2, byte_size(Chars2) div 2),
+            ?_assertEqual([{delete, Text2}], chars_to_lines([{delete, Chars2}], Lookup2))
+        ]
+    end,
+    begin
+        N3     = 66000,
+        Lines3 = [<<(unicode:characters_to_binary(io_lib:format("~p", [I]), utf8, utf16))/binary, "\n"/utf16>> || I <- lists:seq(1, N3)],
+        Text3  = <<<<Line/binary>> || Line <- Lines3>>,
+        #line_hashes{left = Chars3, lookup = Lookup3} = lines_to_chars(Text3, ?S("")),
+        ?_assertEqual([{insert, Text3}], chars_to_lines([{insert, Chars3}], Lookup3))
     end
 ].
 
