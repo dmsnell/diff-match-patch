@@ -332,7 +332,22 @@ lines_to_chars_test_() -> [
         left   = <<1:16>>,
         right  = <<2:16>>,
         lookup = {?S(""), ?S("a"), ?S("b")}
-    }, lines_to_chars(?S("a"), ?S("b")))
+    }, lines_to_chars(?S("a"), ?S("b"))),
+    begin
+        N = 300,
+        Chars = <<<<C:16>> || C <- lists:seq(1, N)>>,
+        Lines = [<<(unicode:characters_to_binary(io_lib:format("~p", [I]), utf8, utf16))/binary, "\n"/utf16>> || I <- lists:seq(1, N)],
+        Text  = <<<<Line/binary>> || Line <- Lines>>,
+        [
+            ?_assertEqual(N, length(Lines)),
+            ?_assertEqual(N, byte_size(Chars) div 2),
+            ?_assertEqual(#line_hashes{
+                left   = Chars,
+                right  = ?S(""),
+                lookup = erlang:list_to_tuple([<<>> | Lines])
+            }, lines_to_chars(Text, ?S("")))
+        ]
+    end
 ].
 
 -endif.
