@@ -12,9 +12,84 @@
     m_common :: binary()
 }).
 
+-record(line_hashes, {
+    left   :: binary(),
+    right  :: binary(),
+    lookup :: tuple()
+}).
+
 %% Interface functions
 
 %% Internal functions
+
+-spec lines_to_chars(Left :: binary(), Right :: binary()) -> #line_hashes{}.
+
+lines_to_chars(Left, Right) ->
+    {Left1, Lookup1, Hash1} = ltc_munge(
+        Left,
+        [],
+        [?S("")],
+        #{?S("") => <<0:16>>},
+        40000,
+        0,
+        binary:match(Left, [?S("\n")])
+    ),
+    {Right1, Lookup2, _Hash2} = ltc_munge(
+        Right,
+        [],
+        Lookup1,
+        Hash1,
+        65535,
+        0,
+        binary:match(Right, [?S("\n")])
+    ),
+    #line_hashes{
+        left   = Left1,
+        right  = Right1,
+        lookup = list_to_tuple(lists:reverse(Lookup2))
+    }.
+
+ltc_munge(<<"">>, Chars, Lookup, Hash, _Max, _I, _) ->
+    {list_to_binary(lists:reverse(Chars)), Lookup, Hash};
+ltc_munge(Text, Chars, Lookup, Hash, _Max, I, _) when byte_size(Text) == I ->
+    {list_to_binary(lists:reverse(Chars)), Lookup, Hash};
+ltc_munge(Text, Chars, Lookup, Hash, _Max, I, nomatch) ->
+    Line = binary:part(Text, I, byte_size(Text) - I),
+    Next = <<(length(Lookup)):16>>,
+    case maps:get(Line, Hash, missing) of
+        missing -> {list_to_binary(lists:reverse([Next | Chars])), [Line | Lookup], maps:put(Line, Next, Hash)};
+        Char    -> {list_to_binary(lists:reverse([Char | Chars])), Lookup, Hash}
+    end;
+ltc_munge(Text, Chars, Lookup, Hash, Max, I, _) when length(Lookup) == Max - 1 ->
+    Line = binary:part(Text, I, byte_size(Text) - I),
+    Next = <<(length(Lookup)):16>>,
+    case maps:get(Line, Hash, missing) of
+        missing -> {list_to_binary(lists:reverse([Next | Chars])), [Line | Lookup], maps:put(Line, Next, Hash)};
+        Char    -> {list_to_binary(lists:reverse([Char | Chars])), Lookup, Hash}
+    end;
+ltc_munge(Text, Chars, Lookup, Hash, Max, I, {P, _L}) ->
+    Line = binary:part(Text, I, P - I + 2),
+    Next = <<(length(Lookup)):16>>,
+    case maps:get(Line, Hash, missing) of
+        missing -> ltc_munge(
+            Text,
+            [Next | Chars],
+            [Line | Lookup],
+            maps:put(Line, Next, Hash),
+            Max,
+            P + 2,
+            binary:match(Text, [?S("\n")], [{scope, {P + 2, byte_size(Text) - (P + 2)}}])
+        );
+        Char -> ltc_munge(
+            Text,
+            [Char | Chars],
+            Lookup,
+            Hash,
+            Max,
+            P + 2,
+            binary:match(Text, [?S("\n")], [{scope, {P + 2, byte_size(Text) - (P + 2)}}])
+        )
+    end.
 
 -spec half_match(Left :: binary(), Right :: binary()) -> #half_match{} | nomatch.
 
@@ -240,6 +315,24 @@ half_match_test_() -> [
         r_suffix = ?S("Hulloy"),
         m_common = ?S("HelloHe")
     }, half_match(?S("qHilloHelloHew"), ?S("xHelloHeHulloy")))}
+].
+
+lines_to_chars_test_() -> [
+    ?_assertEqual(#line_hashes{
+        left   = <<1:16, 2:16, 1:16>>,
+        right  = <<2:16, 1:16, 2:16>>,
+        lookup = {?S(""), ?S("alpha\n"), ?S("beta\n")}
+    }, lines_to_chars(?S("alpha\nbeta\nalpha\n"), ?S("beta\nalpha\nbeta\n"))),
+    ?_assertEqual(#line_hashes{
+        left   = <<>>,
+        right  = <<1:16, 2:16, 3:16, 3:16>>,
+        lookup = {?S(""), ?S("alpha\r\n"), ?S("beta\r\n"), ?S("\r\n")}
+    }, lines_to_chars(?S(""), ?S("alpha\r\nbeta\r\n\r\n\r\n"))),
+    ?_assertEqual(#line_hashes{
+        left   = <<1:16>>,
+        right  = <<2:16>>,
+        lookup = {?S(""), ?S("a"), ?S("b")}
+    }, lines_to_chars(?S("a"), ?S("b")))
 ].
 
 -endif.
