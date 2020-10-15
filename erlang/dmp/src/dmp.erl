@@ -18,8 +18,83 @@
 
 -spec half_match(Left :: binary(), Right :: binary()) -> #half_match{} | nomatch.
 
+half_match(Left, Right) when byte_size(Left) > byte_size(Right) ->
+    hm_prepare(left, Left, Right);
 half_match(Left, Right) ->
-    ok.
+    hm_prepare(right, Right, Left).
+
+hm_prepare(_, Long, Short) when byte_size(Long) < 8; byte_size(Short) * 2 < byte_size(Long) ->
+    nomatch;
+hm_prepare(Longer, Long, Short) ->
+    Length = byte_size(Long),
+    hm_join(
+        Longer,
+        hm_split(Long, Short, ceil(Length / 2 / 4)),
+        hm_split(Long, Short, ceil(Length / 2 / 2))
+    ).
+
+hm_split(Long, Short, I) ->
+    Seed = binary:part(Long, I * 2, floor(byte_size(Long) / 2 / 4)),
+    Best = #half_match{
+        l_prefix = <<"">>,
+        l_suffix = <<"">>,
+        r_prefix = <<"">>,
+        r_suffix = <<"">>,
+        m_common = <<"">>
+    },
+    hm_split(Long, Short, I, Seed, Best, binary:match(Short, [Seed])).
+
+hm_split(Long, Short, I, Seed, Best, {JBytes, _L}) ->
+    J = JBytes div 2,
+    PrefixLength = common_prefix(
+        binary:part(Long, I * 2, byte_size(Long) - I * 2),
+        binary:part(Short, J * 2, byte_size(Short) - J * 2)
+    ),
+    SuffixLength = common_suffix(
+        binary:part(Long, 0, I * 2),
+        binary:part(Short, 0, J * 2)
+    ),
+    Best1 = case byte_size(Best#half_match.m_common) / 2 < PrefixLength + SuffixLength of
+        true  -> #half_match{
+            l_prefix = binary:part(Long, 0, (I - SuffixLength) * 2),
+            l_suffix = binary:part(Long, (I + PrefixLength) * 2, byte_size(Long) - (I + PrefixLength) * 2),
+            r_prefix = binary:part(Short, 0, (J - SuffixLength) * 2),
+            r_suffix = binary:part(Short, (J + PrefixLength) * 2, byte_size(Short) - (J + PrefixLength) * 2),
+            m_common = begin
+                A = binary:part(Short, (J - SuffixLength) * 2, SuffixLength * 2),
+                B = binary:part(Short, J * 2, PrefixLength * 2),
+                <<A/binary, B/binary>>
+            end
+        };
+        false -> Best
+    end,
+    hm_split(
+        Long, Short, I, Seed, Best1,
+        binary:match(Short, [Seed], [{scope, {(J + 1) * 2, byte_size(Short) - (J + 1) * 2}}])
+    );
+hm_split(Long, _Short, _I, _Seed, #half_match{m_common = Common} = Best, nomatch)
+    when byte_size(Common) * 2 >= byte_size(Long) ->
+    Best;
+hm_split(_Long, _Short, _I, _Seed, _Best, nomatch) ->
+    nomatch.
+
+hm_join(_, nomatch, nomatch) -> nomatch;
+hm_join(Longer, Q2, nomatch) -> hm_unswap(Longer, Q2);
+hm_join(Longer, nomatch, Q3) -> hm_unswap(Longer, Q3);
+hm_join(Longer, Q2, Q3)
+    when byte_size(Q2#half_match.m_common) > byte_size(Q3#half_match.m_common) ->
+    hm_unswap(Longer, Q2);
+hm_join(Longer, _Q2, Q3) ->
+    hm_unswap(Longer, Q3).
+
+hm_unswap(left, HalfMatch) -> HalfMatch;
+hm_unswap(right, HalfMatch) -> #half_match{
+    l_prefix = HalfMatch#half_match.r_prefix,
+    l_suffix = HalfMatch#half_match.r_suffix,
+    r_prefix = HalfMatch#half_match.l_prefix,
+    r_suffix = HalfMatch#half_match.l_suffix,
+    m_common = HalfMatch#half_match.m_common
+}.
 
 -spec common_prefix(Left :: binary(), Right :: binary()) -> non_neg_integer().
 
@@ -118,7 +193,7 @@ half_match_test_() -> [
             r_prefix = ?S("12"),
             r_suffix = ?S("90"),
             m_common = ?S("345678")
-        }, half_match(?S("a23456789z"), ?S("1234567890"))),
+        }, half_match(?S("a345678z"), ?S("1234567890"))),
         ?_assertEqual(#half_match{
             l_prefix = ?S("abc"),
             l_suffix = ?S("z"),
