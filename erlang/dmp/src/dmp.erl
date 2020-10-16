@@ -30,10 +30,7 @@
 
 
 cleanup_merge(Diffs) ->
-    Pass1 = cm_merge(case cm_combine(Diffs, [], [], []) of
-        Diffs -> Diffs;
-        Next1 -> cleanup_merge(Next1)
-    end),
+    Pass1 = cm_merge(cm_combine(Diffs, [], [], [])),
     case cm_merge(cm_single_edits(Pass1, [])) of
         Pass1 -> Pass1;
         Next2 -> cleanup_merge(Next2)
@@ -80,13 +77,7 @@ cm_merge([Diff | Diffs], Output) ->
 cm_combine([], [], [], Output) ->
     lists:reverse(Output);
 cm_combine([], Delete, Insert, Output) ->
-    lists:reverse([
-        {insert, <<<<S/binary>> || S <- lists:reverse(Insert)>>},
-        {delete, <<<<S/binary>> || S <- lists:reverse(Delete)>>} |
-        Output
-    ]);
-cm_combine([{_Op, <<>>} | Diffs], Delete, Insert, Output) ->
-    cm_combine(Diffs, Delete, Insert, Output);
+    cm_combine([{equal, <<>>}], Delete, Insert, Output);
 cm_combine([{equal, E0} | Diffs], Delete, Insert, Output) ->
     D0 = <<<<S/binary>> || S <- lists:reverse(Delete)>>,
     I0 = <<<<S/binary>> || S <- lists:reverse(Insert)>>,
