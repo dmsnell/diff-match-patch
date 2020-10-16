@@ -25,6 +25,99 @@
 
 %% Internal functions
 
+-spec cleanup_merge(Diffs) -> Diffs
+    when Diffs :: list({diff_op(), binary()}).
+
+
+cleanup_merge(Diffs) ->
+    Pass1 = cm_merge(case cm_combine(Diffs, [], [], []) of
+        Diffs -> Diffs;
+        Next1 -> cleanup_merge(Next1)
+    end),
+    case cm_merge(cm_single_edits(Pass1, [])) of
+        Pass1 -> Pass1;
+        Next2 -> cleanup_merge(Next2)
+    end.
+
+cm_single_edits([], Output) ->
+    lists:reverse(Output);
+cm_single_edits([{equal, A}, {Op, B}, {equal, C} | Diffs], Output) when Op =/= equal ->
+    case suffix(B, byte_size(A)) of
+        A -> cm_single_edits(Diffs, [
+            {equal, <<A/binary, C/binary>>},
+            {Op, <<A/binary, (no_suffix(B, byte_size(A)))/binary>>} |
+            Output
+        ]);
+        _ -> case prefix(B, byte_size(C)) of
+            C -> cm_single_edits(Diffs, [
+                {Op, <<(no_prefix(B, byte_size(C)))/binary, C/binary>>},
+                {equal, <<A/binary, C/binary>>} |
+                Output
+            ]);
+            _ -> cm_single_edits(Diffs, [
+                {equal, C},
+                {Op, B},
+                {equal, A} |
+                Output
+            ])
+        end
+    end;
+cm_single_edits([Diff | Diffs], Output) ->
+    cm_single_edits(Diffs, [Diff | Output]).
+
+cm_merge(Diffs) ->
+    cm_merge(Diffs, []).
+
+cm_merge([], Output) ->
+    lists:reverse(Output);
+cm_merge([{_Op, <<>>} | Diffs], Output) ->
+    cm_merge(Diffs, Output);
+cm_merge([{Op, A}, {Op, B} | Diffs], Output) ->
+    cm_merge(Diffs, [{Op, <<A/binary, B/binary>>} | Output]);
+cm_merge([Diff | Diffs], Output) ->
+    cm_merge(Diffs, [Diff | Output]).
+
+cm_combine([], [], [], Output) ->
+    lists:reverse(Output);
+cm_combine([], Delete, Insert, Output) ->
+    lists:reverse([
+        {insert, <<<<S/binary>> || S <- lists:reverse(Insert)>>},
+        {delete, <<<<S/binary>> || S <- lists:reverse(Delete)>>} |
+        Output
+    ]);
+cm_combine([{_Op, <<>>} | Diffs], Delete, Insert, Output) ->
+    cm_combine(Diffs, Delete, Insert, Output);
+cm_combine([{equal, E0} | Diffs], Delete, Insert, Output) ->
+    D0 = <<<<S/binary>> || S <- lists:reverse(Delete)>>,
+    I0 = <<<<S/binary>> || S <- lists:reverse(Insert)>>,
+    {EB, D1, I1} = case common_prefix(D0, I0) of
+        0 -> {<<>>, D0, I0};
+        N1 -> {
+            <<E0/binary, (prefix(D0, N1 * 2))/binary>>,
+            no_prefix(D0, N1 * 2),
+            no_prefix(I0, N1 * 2)
+        }
+    end,
+    {EA, D2, I2} = case common_suffix(D1, I1) of
+        0 -> {E0, D1, I1};
+        N2 -> {
+            suffix(D0, N2 * 2),
+            no_suffix(D1, N2 * 2),
+            no_suffix(I1, N2 * 2)
+        }
+    end,
+    cm_combine(Diffs, [], [], [
+        {equal, EA},
+        {insert, I2},
+        {delete, D2},
+        {equal, EB} |
+        Output
+    ]);
+cm_combine([{insert, A} | Diffs], Delete, Insert, Output) ->
+    cm_combine(Diffs, Delete, [A | Insert], Output);
+cm_combine([{delete, A} | Diffs], Delete, Insert, Output) ->
+    cm_combine(Diffs, [A | Delete], Insert, Output).
+
 -spec chars_to_lines(CharDiffs, Lookup) -> LineDiffs
     when CharDiffs :: list({diff_op(), binary()}),
          Lookup    :: tuple(),
@@ -137,20 +230,14 @@ hm_split(Long, Short, I) ->
 
 hm_split(Long, Short, I, Seed, Best, {JBytes, _L}) ->
     J = JBytes div 2,
-    PrefixLength = common_prefix(
-        binary:part(Long, I * 2, byte_size(Long) - I * 2),
-        binary:part(Short, J * 2, byte_size(Short) - J * 2)
-    ),
-    SuffixLength = common_suffix(
-        binary:part(Long, 0, I * 2),
-        binary:part(Short, 0, J * 2)
-    ),
+    PrefixLength = common_prefix(no_prefix(Long, I * 2), no_prefix(Short, J * 2)),
+    SuffixLength = common_suffix(prefix(Long, I * 2), prefix(Short, J * 2)),
     Best1 = case byte_size(Best#half_match.m_common) / 2 < PrefixLength + SuffixLength of
         true  -> #half_match{
-            l_prefix = binary:part(Long, 0, (I - SuffixLength) * 2),
-            l_suffix = binary:part(Long, (I + PrefixLength) * 2, byte_size(Long) - (I + PrefixLength) * 2),
-            r_prefix = binary:part(Short, 0, (J - SuffixLength) * 2),
-            r_suffix = binary:part(Short, (J + PrefixLength) * 2, byte_size(Short) - (J + PrefixLength) * 2),
+            l_prefix =    prefix(Long,  (I - SuffixLength) * 2),
+            l_suffix = no_prefix(Long,  (I + PrefixLength) * 2),
+            r_prefix =    prefix(Short, (J - SuffixLength) * 2),
+            r_suffix = no_prefix(Short, (J + PrefixLength) * 2),
             m_common = begin
                 A = binary:part(Short, (J - SuffixLength) * 2, SuffixLength * 2),
                 B = binary:part(Short, J * 2, PrefixLength * 2),
@@ -235,6 +322,14 @@ prefix(Binary, Bytes) -> binary:part(Binary, 0, Bytes).
 suffix(_Binary, 0) -> <<"">>;
 suffix(Binary, Bytes) when byte_size(Binary) =< Bytes -> Binary;
 suffix(Binary, Bytes) -> binary:part(Binary, byte_size(Binary), -Bytes).
+
+no_prefix(Binary, 0) -> Binary;
+no_prefix(Binary, Bytes) when byte_size(Binary) =< Bytes -> <<>>;
+no_prefix(Binary, Bytes) -> binary:part(Binary, Bytes, byte_size(Binary) - Bytes).
+
+no_suffix(Binary, 0) -> Binary;
+no_suffix(Binary, Bytes) when byte_size(Binary) =< Bytes -> <<>>;
+no_suffix(Binary, Bytes) -> binary:part(Binary, 0, byte_size(Binary) - Bytes).
 
 char_type(<<A:16>>) when A >= 16#D800, A =< 16#DBFF -> high_surrogate;
 char_type(<<A:16>>) when A >= 16#DC00, A =< 16#DFFF -> low_surrogate;
@@ -366,7 +461,7 @@ lines_to_chars_test_() -> [
     end
 ].
 
-chars_to_lines_test_() -> [
+chars_to_lines_test_skip_slow() -> [
     begin
         CDiffs  = [{equal, <<1:16, 2:16, 1:16>>}, {insert, <<2:16, 1:16, 2:16>>}],
         Lookup1 = {<<>>, ?S("alpha\n"), ?S("beta\n")},
@@ -392,6 +487,62 @@ chars_to_lines_test_() -> [
         #line_hashes{left = Chars3, lookup = Lookup3} = lines_to_chars(Text3, ?S("")),
         ?_assertEqual([{insert, Text3}], chars_to_lines([{insert, Chars3}], Lookup3))
     end
+].
+
+cleanup_merge_test_() -> [
+    {"Null case", ?_assertEqual([], cleanup_merge([]))},
+    {"No change case", begin
+        Diffs2 = [{equal, ?S("a")}, {delete, ?S("b")}, {insert, ?S("c")}],
+        ?_assertEqual(Diffs2, cleanup_merge(Diffs2))
+    end},
+    {"Merge equalities", ?_assertEqual(
+        [{equal, ?S("abc")}],
+        cleanup_merge([{equal, ?S("a")}, {equal, ?S("b")}, {equal, ?S("c")}])
+    )},
+    {"Merge deletions", ?_assertEqual(
+        [{delete, ?S("abc")}],
+        cleanup_merge([{delete, ?S("a")}, {delete, ?S("b")}, {delete, ?S("c")}])
+    )},
+    {"Merge insertions", ?_assertEqual(
+        [{insert, ?S("abc")}],
+        cleanup_merge([{insert, ?S("a")}, {insert, ?S("b")}, {insert, ?S("c")}])
+    )},
+    {"Merge interweave", ?_assertEqual(
+        [{delete, ?S("ac")}, {insert, ?S("bd")}, {equal, ?S("ef")}],
+        cleanup_merge([{delete, ?S("a")}, {insert, ?S("b")}, {delete, ?S("c")}, {insert, ?S("d")}, {equal, ?S("e")}, {equal, ?S("f")}])
+    )},
+    {"Prefix and suffix detection", ?_assertEqual(
+        [{equal, ?S("a")}, {delete, ?S("d")}, {insert, ?S("b")}, {equal, ?S("c")}],
+        cleanup_merge([{delete, ?S("a")}, {insert, ?S("abc")}, {delete, ?S("dc")}])
+    )},
+    {"Prefix and suffix detection with equalities", ?_assertEqual(
+        [{equal, ?S("xa")}, {delete, ?S("d")}, {insert, ?S("b")}, {equal, ?S("cy")}],
+        cleanup_merge([{equal, ?S("x")}, {delete, ?S("a")}, {insert, ?S("abc")}, {delete, ?S("dc")}, {equal, ?S("y")}])
+    )},
+    {"Slide edit left", ?_assertEqual(
+        [{insert, ?S("ab")}, {equal, ?S("ac")}],
+        cleanup_merge([{equal, ?S("a")}, {insert, ?S("ba")}, {equal, ?S("c")}])
+    )},
+    {"Slide edit right", ?_assertEqual(
+        [{equal, ?S("ca")}, {insert, ?S("ba")}],
+        cleanup_merge([{equal, ?S("c")}, {insert, ?S("ab")}, {equal, ?S("a")}])
+    )},
+    {"Slide edit left recursive", ?_assertEqual(
+        [{delete, ?S("abc")}, {equal, ?S("acx")}],
+        cleanup_merge([{equal, ?S("a")}, {delete, ?S("b")}, {equal, ?S("c")}, {delete, ?S("ac")}, {equal, ?S("x")}])
+    )},
+    {"Slide edit right recursive", ?_assertEqual(
+        [{equal, ?S("xca")}, {delete, ?S("cba")}],
+        cleanup_merge([{equal, ?S("x")}, {delete, ?S("ca")}, {equal, ?S("c")}, {delete, ?S("b")}, {equal, ?S("a")}])
+    )},
+    {"Empty merge", ?_assertEqual(
+        [{insert, ?S("a")}, {equal, ?S("bc")}],
+        cleanup_merge([{delete, ?S("b")}, {insert, ?S("ab")}, {equal, ?S("c")}])
+    )},
+    {"Empty equality", ?_assertEqual(
+        [{insert, ?S("a")}, {equal, ?S("b")}],
+        cleanup_merge([{equal, <<"">>}, {insert, ?S("a")}, {equal, ?S("b")}])
+    )}
 ].
 
 -endif.
