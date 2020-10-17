@@ -49,7 +49,45 @@
     when Diffs :: list(diff()).
 
 cleanup_semantic_lossless(Diffs) ->
-    Diffs.
+    csl_scan(Diffs, 0).
+
+csl_scan(Diffs, N) when N >= length(Diffs) ->
+    Diffs;
+csl_scan(Diffs, N) ->
+    {Front, Diffs1} = lists:split(N, Diffs),
+    {Diffs2, NN} = csl_reduce(Diffs1),
+    csl_scan(lists:append(Front, Diffs2), N + 1 + NN).
+
+csl_reduce([{equal, A}, {Op, B}, {equal, C} | Diffs]) when Op =/= equal ->
+    {A1, B1, C1} = case common_suffix(A, B) of
+        0  -> {A, B, C};
+        NS -> {
+            no_suffix(A, NS * 2),
+            <<(suffix(B, NS * 2))/binary, (no_suffix(B, NS * 2))/binary>>,
+            <<(suffix(B, NS * 2))/binary, C/binary>>
+        }
+    end,
+    Score = cleanup_semantic_score(A1, B1) + cleanup_semantic_score(B1, C1),
+    case csl_find_best({A1, B1, C1}, {A1, B1, C1, Score}) of
+        {<<>>, B2, <<>>} -> {[{Op, B2} | Diffs], -1};
+        {<<>>, B2, C2}   -> {[{Op, B2}, {equal, C2} | Diffs], -1};
+        {A2, B2, <<>>}   -> {[{equal, A2}, {Op, B2} | Diffs], 0};
+        {A2, B2, C2}     -> {[{equal, A2}, {Op, B2}, {equal, C2} | Diffs], 0}
+    end;
+csl_reduce(Diffs) ->
+    {Diffs, 0}.
+
+csl_find_best({A, <<X:16, B/binary>>, <<X:16, C1/binary>>}, {BA, BB, BC, BestScore}) ->
+    A1 = <<A/binary, X:16>>,
+    B1 = <<B/binary, X:16>>,
+    case cleanup_semantic_score(A1, B1) + cleanup_semantic_score(B1, C1) of
+        Score when Score >= BestScore ->
+            csl_find_best({A1, B1, C1}, {A1, B1, C1, Score});
+        _ ->
+            csl_find_best({A1, B1, C1}, {BA, BB, BC, BestScore})
+    end;
+csl_find_best(_, {BA, BB, BC, _}) ->
+    {BA, BB, BC}.
 
 -spec cleanup_semantic_score(Left :: binary(), Right :: binary()) -> non_neg_integer().
 
