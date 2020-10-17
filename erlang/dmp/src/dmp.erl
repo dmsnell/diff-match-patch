@@ -51,12 +51,7 @@ cm_single_edits([{equal, A}, {Op, B}, {equal, C} | Diffs], Output) when Op =/= e
                 {equal, <<A/binary, C/binary>>} |
                 Output
             ]);
-            _ -> cm_single_edits(Diffs, [
-                {equal, C},
-                {Op, B},
-                {equal, A} |
-                Output
-            ])
+            _ -> cm_single_edits([{Op, B}, {equal, C} | Diffs], [{equal, A} | Output])
         end
     end;
 cm_single_edits([Diff | Diffs], Output) ->
