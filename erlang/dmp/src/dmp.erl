@@ -83,18 +83,18 @@ cm_combine([{equal, E0} | Diffs], Delete, Insert, Output) ->
     I0 = <<<<S/binary>> || S <- lists:reverse(Insert)>>,
     {EB, D1, I1} = case common_prefix(D0, I0) of
         0 -> {<<>>, D0, I0};
-        N1 -> {
-            <<E0/binary, (prefix(D0, N1 * 2))/binary>>,
-            no_prefix(D0, N1 * 2),
-            no_prefix(I0, N1 * 2)
+        NP -> {
+            prefix(I0, NP * 2),
+            no_prefix(D0, NP * 2),
+            no_prefix(I0, NP * 2)
         }
     end,
     {EA, D2, I2} = case common_suffix(D1, I1) of
         0 -> {E0, D1, I1};
-        N2 -> {
-            suffix(D0, N2 * 2),
-            no_suffix(D1, N2 * 2),
-            no_suffix(I1, N2 * 2)
+        NS -> {
+            <<(suffix(I0, NS * 2))/binary, E0/binary>>,
+            no_suffix(D1, NS * 2),
+            no_suffix(I1, NS * 2)
         }
     end,
     cm_combine(Diffs, [], [], [
