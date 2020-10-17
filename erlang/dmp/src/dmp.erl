@@ -558,11 +558,35 @@ cleanup_merge_test_() -> [
 ].
 
 cleanup_semantic_lossless_test_() -> [
-    {"Null case", ?_assertEqual([], cleanup_semantic_lossless([]))}
-    % {"Blank lines", ?_assertEqual(
-    %     [?EQ("AAA\r\n\r\n"), ?INS("BBB\r\nDDD\r\n\r\n"), ?EQ("BBB\r\nEEE")],
-    %     cleanup_semantic_lossless([?EQ("AAA\r\n\r\nBBB"), ?INS("\r\nDDD\r\n\r\nBBB"), ?EQ("\r\nEEE")])
-    % )}
+    {"Null case", ?_assertEqual([], cleanup_semantic_lossless([]))},
+    {"Blank lines", ?_assertEqual(
+        [?EQ("AAA\r\n\r\n"), ?INS("BBB\r\nDDD\r\n\r\n"), ?EQ("BBB\r\nEEE")],
+        cleanup_semantic_lossless([?EQ("AAA\r\n\r\nBBB"), ?INS("\r\nDDD\r\n\r\nBBB"), ?EQ("\r\nEEE")])
+    )},
+    {"Line boundaries", ?_assertEqual(
+        [?EQ("AAA\r\n"), ?INS("BBB DDD\r\n"), ?EQ("BBB EEE")],
+        cleanup_semantic_lossless([?EQ("AAA\r\nBBB"), ?INS(" DDD\r\nBBB"), ?EQ(" EEE")])
+    )},
+    {"Word boundaries", ?_assertEqual(
+        [?EQ("The "), ?INS("cow and the "), ?EQ("cat.")],
+        cleanup_semantic_lossless([?EQ("The c"), ?INS("ow and the c"), ?EQ("at.")])
+    )},
+    {"Alphanumeric boundaries", ?_assertEqual(
+        [?EQ("The-"), ?INS("cow-and-the-"), ?EQ("cat.")],
+        cleanup_semantic_lossless([?EQ("The-c"), ?INS("ow-and-the-c"), ?EQ("at.")])
+    )},
+    {"Hitting the start", ?_assertEqual(
+        [?DEL("a"), ?EQ("aax")],
+        cleanup_semantic_lossless([?EQ("a"), ?DEL("a"), ?EQ("ax")])
+    )},
+    {"Hitting the end", ?_assertEqual(
+        [?EQ("xaa"), ?DEL("a")],
+        cleanup_semantic_lossless([?EQ("xa"), ?DEL("a"), ?EQ("a")])
+    )},
+    {"Sentence boundaries", ?_assertEqual(
+        [?EQ("The xxx."), ?INS(" The zzz."), ?EQ(" The yyy.")],
+        cleanup_semantic_lossless([?EQ("The xxx. The "), ?INS("zzz. The "), ?EQ("yyy.")])
+    )}
 ].
 
 -endif.
