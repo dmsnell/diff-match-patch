@@ -447,7 +447,7 @@ lines_to_chars_test_() -> [
     end
 ].
 
-chars_to_lines_test_skip_slow() -> [
+chars_to_lines_test_() -> [
     begin
         CDiffs  = [{equal, <<1:16, 2:16, 1:16>>}, {insert, <<2:16, 1:16, 2:16>>}],
         Lookup1 = {<<>>, ?S("alpha\n"), ?S("beta\n")},
