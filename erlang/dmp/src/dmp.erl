@@ -51,9 +51,76 @@
 cleanup_semantic_lossless(Diffs) ->
     Diffs.
 
+-spec cleanup_semantic_score(Left :: binary(), Right :: binary()) -> non_neg_integer().
+
+cleanup_semantic_score(Left, Right) when Left == <<"">>; Right == <<"">> -> 6;
+cleanup_semantic_score(Left, Right) ->
+    L_C = suffix(Left, 2),
+    R_C = prefix(Right, 2),
+    L_NA = c_non_alphanum(L_C),
+    R_NA = c_non_alphanum(R_C),
+    L_WS = L_NA andalso c_space(L_C),
+    R_WS = R_NA andalso c_space(R_C),
+    L_LB = L_WS andalso c_linebreak(L_C),
+    R_LB = R_WS andalso c_linebreak(R_C),
+    L_BL = L_LB andalso css_blank_line(left, Left),
+    R_BL = R_LB andalso css_blank_line(right, Right),
+    if
+        L_BL; R_BL -> 5;
+        L_LB; R_LB -> 4;
+        L_NA, not L_WS, R_WS -> 3;
+        L_WS; R_WS -> 2;
+        L_NA; R_NA -> 1;
+        true -> 0
+    end.
+
+css_blank_line(left, Text) when byte_size(Text) >= 6 ->
+    case suffix(Text, 6) of
+        <<"\n\r\n"/utf16>> -> true;
+        <<_:16, "\n\n"/utf16>> -> true;
+        _ -> false
+    end;
+css_blank_line(left, Text) when byte_size(Text) >= 4 ->
+    case suffix(Text, 4) of
+        <<"\n\n"/utf16>> -> true;
+        _ -> false
+    end;
+css_blank_line(right, <<"\n\n"/utf16, _>>) -> true;
+css_blank_line(right, <<"\n\r\n"/utf16, _>>) -> true;
+css_blank_line(right, <<"\r\n\n"/utf16, _>>) -> true;
+css_blank_line(right, <<"\r\n\r\n"/utf16, _>>) -> true;
+css_blank_line(_, _) -> false.
+
+c_upper(<<C:16>>) -> C >= $A andalso C =< $Z.
+c_lower(<<C:16>>) -> C >= $a andalso C =< $z.
+c_number(<<C:16>>) -> C >= $0 andalso C =< $9.
+c_alpha(C) -> c_upper(C) orelse c_lower(C).
+c_alphanum(C) -> c_alpha(C) orelse c_number(C).
+c_non_alphanum(C) -> not c_alphanum(C).
+
+c_space(<<" "/utf16>>) -> true;
+c_space(<<"\f"/utf16>>) -> true;
+c_space(<<"\n"/utf16>>) -> true;
+c_space(<<"\r"/utf16>>) -> true;
+c_space(<<"\t"/utf16>>) -> true;
+c_space(<<"\v"/utf16>>) -> true;
+c_space(<<16#a0:16>>) -> true;
+c_space(<<16#1680:16>>) -> true;
+c_space(<<C:16>>) when C >= 16#2000 andalso C =< 16#200a -> true;
+c_space(<<16#2028:16>>) -> true;
+c_space(<<16#2029:16>>) -> true;
+c_space(<<16#202f:16>>) -> true;
+c_space(<<16#205f:16>>) -> true;
+c_space(<<16#3000:16>>) -> true;
+c_space(<<16#feff:16>>) -> true;
+c_space(_) -> false.
+
+c_linebreak(<<"\n"/utf16>>) -> true;
+c_linebreak(<<"\r"/utf16>>) -> true;
+c_linebreak(_) -> false.
+
 -spec cleanup_merge(Diffs) -> Diffs
     when Diffs :: list(diff()).
-
 
 cleanup_merge(Diffs) ->
     Pass1 = cm_merge(cm_combine(Diffs, [], [], [])),
