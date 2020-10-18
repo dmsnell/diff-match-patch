@@ -38,8 +38,7 @@
     v1       :: atomics:atomics_ref(),
     v2       :: atomics:atomics_ref(),
     delta    :: integer(),
-    front    :: boolean(),
-    state    :: atomics:atomics_ref()
+    front    :: boolean()
 }).
 
 -record(half_match, {
@@ -74,19 +73,23 @@ main(Left, Right) ->
     R0 = Right,
     {L1, R1, P} = case common_prefix(L0, R0) of
         0  -> {L0, R0, <<>>};
-        NP -> {
-            no_prefix(L0, NP * 2),
-            no_prefix(R0, NP * 2),
-            prefix(L0, NP * 2)
-        }
+        NP -> 
+            {L0P, L0S} = split_binary(L0, NP * 2),
+            {
+                L0S,
+                no_prefix(R0, NP * 2),
+                L0P
+            }
     end,
     {L2, R2, S} = case common_suffix(L1, R1) of
         0  -> {L1, R1, <<>>};
-        NS -> {
-            no_suffix(L1, NS * 2),
-            no_suffix(R1, NS * 2),
-            suffix(L1, NS * 2)
-        }
+        NS -> 
+            {L1P, L1S} = split_binary(L1, byte_size(L1) - NS * 2),
+            {
+                L1P,
+                no_suffix(R1, NS * 2),
+                L1S
+            }
     end,
     {diffs, Middle} = compute(L2, R2),
     Diffs = case {P, S} of
@@ -104,49 +107,33 @@ main(Left, Right) ->
          Right :: binary(),
          Diffs :: {diffs, list(diff())}.
 
-compute(<<>>, Right) ->
+compute(<<>>, <<Right/binary>>) ->
     {diffs, [{insert, Right}]};
-compute(Left, <<>>) ->
+compute(<<Left/binary>>, <<>>) ->
     {diffs, [{delete, Left}]};
-compute(Left, Right) when byte_size(Left) > byte_size(Right) ->
-    compute(left, Left, Right, Left, Right);
-compute(Left, Right) ->
-    compute(right, Left, Right, Right, Left).
+compute(<<L:2/bytes>>, <<Right/binary>>) ->
+    {diffs, [{delete, L}, {insert, Right}]};
+compute(<<Left/binary>>, <<R:2/bytes>>) ->
+    {diffs, [{delete, R}, {insert, Left}]};
+compute(<<Left/binary>>, <<Right/binary>>) when byte_size(Left) > byte_size(Right) ->
+    compute(Left, Right, Left, Right, delete);
+compute(<<Left/binary>>, <<Right/binary>>) ->
+    compute(Left, Right, Right, Left, insert).
 
-compute(Longer, Left, Right, Long, Short) ->
-    Op = case Longer of
-        left  -> delete;
-        right -> insert
-    end,
+compute(<<Left/binary>>, <<Right/binary>>, <<Long/binary>>, <<Short/binary>>, Op) ->
     case binary:match(Long, [Short]) of
         {P, L} -> {diffs, [
             {Op, prefix(Long, P)},
             {equal, Short},
             {Op, no_prefix(Long, P + L)}
         ]};
-        nomatch -> if
-            byte_size(Short) == 2 -> {diffs, [
-                {delete, Left},
-                {insert, Right}
-            ]};
-            true -> case half_match(Left, Right) of
-                HM when is_record(HM, half_match) -> begin
-                    {diffs, DiffsA} = main(
-                        HM#half_match.l_prefix,
-                        HM#half_match.r_prefix
-                    ),
-                    {diffs, DiffsB} = main(
-                        HM#half_match.l_suffix,
-                        HM#half_match.r_suffix
-                    ),
-                    {diffs, lists:append([
-                        DiffsA,
-                        [{equal, HM#half_match.m_common}],
-                        DiffsB
-                    ])}
-                end;
-                _ -> bisect(Left, Right)
-            end
+        nomatch -> case half_match(Left, Right) of
+            HM when is_record(HM, half_match) -> begin
+                {diffs, DiffsA} = main(HM#half_match.l_prefix, HM#half_match.r_prefix),
+                {diffs, DiffsB} = main(HM#half_match.l_suffix, HM#half_match.r_suffix),
+                {diffs, lists:append([DiffsA, [{equal, HM#half_match.m_common}], DiffsB])}
+            end;
+            _ -> bisect(Left, Right)
         end
     end.
 
@@ -165,14 +152,10 @@ bisect(Left, Right) ->
     % but for short strings it crashes with OOB
     V1      = atomics:new(VLength + 1, [{signed, true}]),
     V2      = atomics:new(VLength + 1, [{signed, true}]),
-    ok      = atomic_set(V1, -1),
-    ok      = atomic_set(V2, -1),
-    ok      = a_set(V1, VOffset + 1, 0),
-    ok      = a_set(V2, VOffset + 1, 0),
+    ok      = atomics:put(V1, VOffset + 2, 1),
+    ok      = atomics:put(V2, VOffset + 2, 1),
     Delta   = LLength - RLength,
     Front   = Delta rem 2 =/= 0,
-    % k1start, k1end, k2start, k2end
-    State   = atomics:new(4, [{signed, true}]),
     case bisect_d_loop(#bisect_state{
         left     = Left,
         right    = Right,
@@ -184,43 +167,50 @@ bisect(Left, Right) ->
         v1       = V1,
         v2       = V2,
         delta    = Delta,
-        front    = Front,
-        state    = State
-    }, 0, continue_forward) of
+        front    = Front
+    }, 0, 0, 0, 0, 0, continue_forward) of
         {diffs, Diffs} -> {diffs, Diffs};
         timeout        -> {diffs, [{delete, Left}, {insert, Right}]}
     end.
 
--spec bisect_d_loop(Args, D, Action) -> Result
-    when Args   :: #bisect_state{},
-         D      :: non_neg_integer(),
-         Action :: continue_forward
-                 | continue_reverse
-                 | Diffs
-                 | timeout,
-         Diffs  :: {diffs, list(diff())},
-         Result :: Diffs
-                 | timeout.
+-spec bisect_d_loop(Args, D, K1Start, K1End, K2Start, K2End, Action) -> Result
+    when Args    :: #bisect_state{},
+         D       :: non_neg_integer(),
+         K1Start :: integer(),
+         K1End   :: integer(),
+         K2Start :: integer(),
+         K2End   :: integer(),
+         Action  :: continue_forward
+                  | continue_reverse
+                  | Diffs
+                  | timeout,
+         Diffs   :: {diffs, list(diff())},
+         Result  :: Diffs
+                  | timeout.
 
-bisect_d_loop(#bisect_state{max_d = MaxD}, D, _) when D >= MaxD ->
+bisect_d_loop(#bisect_state{max_d = MaxD}, D, _, _, _, _, _) when D >= MaxD ->
     timeout;
-bisect_d_loop(_Args, _D, {diffs, Diffs}) ->
+bisect_d_loop(_Args, _D, _, _, _, _, {diffs, Diffs}) ->
     {diffs, Diffs};
-bisect_d_loop(#bisect_state{state = S} = Args, D, continue_forward) ->
-    bisect_d_loop(Args, D, bisect_forward(Args, D, -D + a_get(S, k1start), D - a_get(S, k1end)));
-bisect_d_loop(#bisect_state{state = S} = Args, D, continue_reverse) ->
-    bisect_d_loop(Args, D + 1, bisect_reverse(Args, D, -D + a_get(S, k2start), D - a_get(S, k2end))).
+bisect_d_loop(Args, D, K1Start, K1End, K2Start, K2End, continue_forward) ->
+    {K1Start1, K1End1, Next} = bisect_forward(Args, D, K1Start, K1End, -D + K1Start, D - K1End),
+    bisect_d_loop(Args, D, K1Start1, K1End1, K2Start, K2End, Next);
+bisect_d_loop(Args, D, K1Start, K1End, K2Start, K2End, continue_reverse) ->
+    {K2Start2, K2End2, Next} = bisect_reverse(Args, D, K2Start, K2End, -D + K2Start, D - K2End),
+    bisect_d_loop(Args, D + 1, K1Start, K1End, K2Start2, K2End2, Next).
 
--spec bisect_forward(Args, D, K1, MaxK1) -> Result
-    when Args   :: #bisect_state{},
-         D      :: non_neg_integer(),
-         K1     :: integer(),
-         MaxK1  :: integer(),
-         Result :: {diffs, list(diff())}
-                 | continue_reverse.
+-spec bisect_forward(Args, D, K1Start, K1End, K1, MaxK1) -> Result
+    when Args    :: #bisect_state{},
+         D       :: non_neg_integer(),
+         K1Start :: integer(),
+         K1End   :: integer(),
+         K1      :: integer(),
+         MaxK1   :: integer(),
+         Result  :: {K1, MaxK1, {diffs, list(diff())}}
+                  | continue_reverse.
 
-bisect_forward(_Args, _D, K1, MaxK1) when K1 > MaxK1 ->
-    continue_reverse;
+bisect_forward(_Args, _D, K1Start, K1End, K1, MaxK1) when K1 > MaxK1 ->
+    {K1Start, K1End, continue_reverse};
 bisect_forward(#bisect_state{
     left     = Left,
     right    = Right,
@@ -230,36 +220,39 @@ bisect_forward(#bisect_state{
     v_offset = VOffset,
     delta    = Delta,
     front    = Front,
-    state    = S,
     v1       = V1,
     v2       = V2
-} = Args, D, K1, _MaxK1) ->
+} = Args, D, K1Start, K1End, K1, _MaxK1) ->
     K1Offset = VOffset + K1,
-    {X0, Y0} = bisect_get_xy(K1, D, V1, K1Offset),
+    X0       = bisect_get_xy(K1, D, V1, K1Offset),
+    Y0       = X0 - K1,
     {X1, Y1} = bisect_advance_forward(Left, Right, LLength, RLength, X0, Y0),
-    ok       = a_set(V1, K1Offset, X1),
+    ok       = atomics:put(V1, K1Offset + 1, X1 + 1),
     RanOffR  = X1 > LLength,
     RanOffB  = Y1 > RLength,
     K2Offset = VOffset + Delta - K1,
     AtV2     = if
-        K2Offset >= 0, K2Offset < VLength -> a_get(V2, K2Offset);
-        true                              -> -1
+        not RanOffR,
+        not RanOffB,
+        Front,
+        K2Offset >= 0,
+        K2Offset < VLength
+            -> atomics:get(V2, K2Offset + 1) - 1;
+        true
+            -> -1
     end,
     X2       = LLength - AtV2,
+    K1End_   = case RanOffR of true -> K1End + 2; false -> K1End end,
+    K1Start_ = case RanOffB of true -> K1Start + 2; false -> K1Start end,
     case if
-        RanOffR             -> a_add(S, k1end, 2),
-                               continue;
-        RanOffB             -> a_add(S, k1start, 2),
-                               continue;
-        not Front           -> continue;
-        K2Offset < 0        -> continue;
-        K2Offset >= VLength -> continue;
+        RanOffR             -> continue;
+        RanOffB             -> continue;
         AtV2 == -1          -> continue;
         X1 >= X2            -> bisect_split(Left, Right, X1, Y1);
         true                -> continue
     end of
-        continue            -> bisect_forward(Args, D, K1 + 2, D - a_get(S, k1end));
-        {diffs, Diffs}      -> {diffs, Diffs} 
+        continue            -> bisect_forward(Args, D, K1Start_, K1End_, K1 + 2, D - K1End_);
+        {diffs, Diffs}      -> {K1Start_, K1End_, {diffs, Diffs}}
     end.
 
 -spec bisect_advance_forward(Left, Right, LLength, RLength, X, Y) -> {X, Y}
@@ -274,21 +267,26 @@ bisect_advance_forward(_Left, _Right, LLength, RLength, X, Y)
     when X >= LLength; Y >= RLength ->
     {X, Y};
 bisect_advance_forward(Left, Right, LLength, RLength, X, Y) ->
-    case {utf16_at(Left, X), utf16_at(Right, Y)} of
-        {C, C} -> bisect_advance_forward(Left, Right, LLength, RLength, X + 1, Y + 1);
-        _      -> {X, Y}
+    case {binary:at(Left, X * 2), binary:at(Right, Y * 2)} of
+        {H, H} -> case {binary:at(Left, X * 2 + 1), binary:at(Right, Y * 2 + 1)} of
+            {L, L} -> bisect_advance_forward(Left, Right, LLength, RLength, X + 1, Y + 1);
+            _      -> {X, Y}
+        end;
+        _ -> {X, Y}
     end.
 
--spec bisect_reverse(Args, D, K2, MaxK2) -> Result
-    when Args   :: #bisect_state{},
-         D      :: non_neg_integer(),
-         K2     :: integer(),
-         MaxK2  :: integer(),
-         Result :: {diffs, list(diff())}
-                 | continue_forward.
+-spec bisect_reverse(Args, D, K2Start, K2End, K2, MaxK2) -> Result
+    when Args    :: #bisect_state{},
+         D       :: non_neg_integer(),
+         K2Start :: integer(),
+         K2End   :: integer(),
+         K2      :: integer(),
+         MaxK2   :: integer(),
+         Result  :: {K2, MaxK2, {diffs, list(diff())}}
+                  | continue_forward.
 
-bisect_reverse(_Args, _D, K2, MaxK2) when K2 > MaxK2 ->
-    continue_forward;
+bisect_reverse(_Args, _D, K2Start, K2End, K2, MaxK2) when K2 > MaxK2 ->
+    {K2Start, K2End, continue_forward};
 bisect_reverse(#bisect_state{
     left     = Left,
     right    = Right,
@@ -298,38 +296,41 @@ bisect_reverse(#bisect_state{
     v_offset = VOffset,
     delta    = Delta,
     front    = Front,
-    state    = S,
     v1       = V1,
     v2       = V2
-} = Args, D, K2, _MaxK2) ->
+} = Args, D, K2Start, K2End, K2, _MaxK2) ->
     K2Offset = VOffset + K2,
-    {X0, Y0} = bisect_get_xy(K2, D, V2, K2Offset),
+    X0       = bisect_get_xy(K2, D, V2, K2Offset),
+    Y0       = X0 - K2,
     {X2, Y2} = bisect_advance_reverse(Left, Right, LLength, RLength, X0, Y0),
-    ok       = a_set(V2, K2Offset, X2),
+    ok       = atomics:put(V2, K2Offset + 1, X2 + 1),
     RanOffL  = X2 > LLength,
     RanOffT  = Y2 > RLength,
     K1Offset = VOffset + Delta - K2,
     AtV1     = if
-        K1Offset >= 0, K1Offset < VLength -> a_get(V1, K1Offset);
-        true                              -> -1
+        not RanOffL,
+        not RanOffT,
+        not Front,
+        K1Offset >= 0,
+        K1Offset < VLength
+            -> atomics:get(V1, K1Offset + 1) - 1;
+        true
+            -> -1
     end,
     X1       = AtV1,
     Y1       = VOffset + X1 - K1Offset,
     X2Mirror = LLength - X2,
+    K2End_   = case RanOffL of true -> K2End + 2; false -> K2End end,
+    K2Start_ = case RanOffT of true -> K2Start + 2; false -> K2Start end,
     case if
-        RanOffL             -> a_add(S, k2end, 2),
-                               continue;
-        RanOffT             -> a_add(S, k2start, 2),
-                               continue;
-        Front               -> continue;
-        K1Offset < 0        -> continue;
-        K1Offset >= VLength -> continue;
+        RanOffL             -> continue;
+        RanOffT             -> continue;
         AtV1 == -1          -> continue;
         X1 >= X2Mirror      -> bisect_split(Left, Right, X1, Y1);
         true                -> continue
     end of
-        continue            -> bisect_reverse(Args, D, K2 + 2, D - a_get(S, k2end));
-        {diffs, Diffs}      -> {diffs, Diffs} 
+        continue            -> bisect_reverse(Args, D, K2Start_, K2End_, K2 + 2, D - K2End_);
+        {diffs, Diffs}      -> {K2Start_, K2End_, {diffs, Diffs}}
     end.
 
 -spec bisect_advance_reverse(Left, Right, LLength, RLength, X, Y) -> {X, Y}
@@ -344,30 +345,30 @@ bisect_advance_reverse(_Left, _Right, LLength, RLength, X, Y)
     when X >= LLength; Y >= RLength ->
     {X, Y};
 bisect_advance_reverse(Left, Right, LLength, RLength, X, Y) ->
-    case {
-        utf16_at(Left, LLength - X - 1),
-        utf16_at(Right, RLength - Y - 1)
-    } of
-        {C, C} -> bisect_advance_reverse(Left, Right, LLength, RLength, X + 1, Y + 1);
-        _      -> {X, Y}
+    case {binary:at(Left, (LLength - X - 1) * 2), binary:at(Right, (RLength - Y - 1) * 2)} of
+        {H, H} -> case {binary:at(Left, (LLength - X - 1) * 2 + 1), binary:at(Right, (RLength - Y - 1) * 2 + 1)} of
+            {L, L} -> bisect_advance_reverse(Left, Right, LLength, RLength, X + 1, Y + 1);
+            _      -> {X, Y}
+        end;
+        _ -> {X, Y}
     end.
 
--spec bisect_get_xy(K, D, V, KOffset) -> {X, Y}
+-spec bisect_get_xy(K, D, V, KOffset) -> X
     when K       :: integer(),
          D       :: non_neg_integer(),
          V       :: atomics:atomics_ref(),
          KOffset :: integer(),
-         X       :: non_neg_integer(),
-         Y       :: non_neg_integer().
+         X       :: non_neg_integer().
 
-bisect_get_xy(K, D, V, KOffset) ->
-    Prev = a_get(V, KOffset - 1),
-    Next = a_get(V, KOffset + 1),
-    X = case K == -D orelse (K =/= D andalso Prev < Next) of
+bisect_get_xy(K, D, V, KOffset) when K == -D -> atomics:get(V, KOffset + 2) - 1;
+bisect_get_xy(K, D, V, KOffset) when K ==  D -> atomics:get(V, KOffset);
+bisect_get_xy(_, _, V, KOffset) ->
+    Prev = atomics:get(V, KOffset) - 1,
+    Next = atomics:get(V, KOffset + 2) - 1,
+    case Prev < Next of
         true  -> Next;
         false -> Prev + 1
-    end,
-    {X, X - K}.
+    end.
 
 -spec bisect_split(Left, Right, X, Y) -> Result
     when Left   :: binary(),
@@ -376,42 +377,17 @@ bisect_get_xy(K, D, V, KOffset) ->
          Y      :: non_neg_integer(),
          Result :: {diffs, list(diff())}.
 
-bisect_split(Left, Right, X, Y) ->
-    Text1a =    prefix(Left,  X * 2),
-    Text2a =    prefix(Right, Y * 2),
-    Text1b = no_prefix(Left,  X * 2),
-    Text2b = no_prefix(Right, Y * 2),
+bisect_split(<<Left/binary>>, <<Right/binary>>, X, Y) ->
+    % Text1a =    prefix(Left,  X * 2),
+    % Text2a =    prefix(Right, Y * 2),
+    % Text1b = no_prefix(Left,  X * 2),
+    % Text2b = no_prefix(Right, Y * 2),
+    {Text1a, Text1b} = split_binary(Left, X * 2),
+    {Text2a, Text2b} = split_binary(Right, Y * 2),
 
     {diffs, DiffsA} = main(Text1a, Text2a),
     {diffs, DiffsB} = main(Text1b, Text2b),
     {diffs, lists:append(DiffsA, DiffsB)}.
-
--spec bs_state_arg(Name) -> non_neg_integer()
-    when Name :: k1start | k1end | k2start | k2end.
-
-bs_state_arg(k1start) -> 0;
-bs_state_arg(k1end)   -> 1;
-bs_state_arg(k2start) -> 2;
-bs_state_arg(k2end)   -> 3.
-
-a_add(Ref, Arg, Inc) when is_atom(Arg) -> a_add(Ref, bs_state_arg(Arg), Inc);
-a_add(Ref, Index, Inc) -> atomics:add(Ref, Index + 1, Inc).
-
-a_get(Ref, Arg) when is_atom(Arg) -> a_get(Ref, bs_state_arg(Arg));
-a_get(Ref, Index) -> atomics:get(Ref, Index + 1).
-
-a_set(Ref, Arg, Value) when is_atom(Arg) -> a_set(Ref, bs_state_arg(Arg), Value);
-a_set(Ref, Index, Value) -> atomics:put(Ref, Index + 1, Value).
-
-atomic_set(Ref, Value) ->
-    #{size := Size} = atomics:info(Ref),
-    atomic_set(Ref, Value, Size).
-
-atomic_set(_Ref, _Value, 0) ->
-    ok;
-atomic_set(Ref, Value, Index) ->
-    ok = atomics:put(Ref, Index, Value),
-    atomic_set(Ref, Value, Index - 1).
 
 -spec cleanup_semantic_lossless(Diffs) -> Diffs
     when Diffs :: list(diff()).
@@ -459,8 +435,9 @@ csl_find_best(_, {BA, BB, BC, _}) ->
 
 -spec cleanup_semantic_score(Left :: binary(), Right :: binary()) -> non_neg_integer().
 
-cleanup_semantic_score(Left, Right) when Left == <<"">>; Right == <<"">> -> 6;
-cleanup_semantic_score(Left, Right) ->
+cleanup_semantic_score(<<>>, <<_Right/binary>>) -> 6;
+cleanup_semantic_score(<<_Left/binary>>, <<>>) -> 6;
+cleanup_semantic_score(<<Left/binary>>, <<Right/binary>>) ->
     L_C = suffix(Left, 2),
     R_C = prefix(Right, 2),
     L_NA = c_non_alphanum(L_C),
@@ -480,13 +457,13 @@ cleanup_semantic_score(Left, Right) ->
         true -> 0
     end.
 
-css_blank_line(left, Text) when byte_size(Text) >= 6 ->
+css_blank_line(left, <<Text:6/bytes, _/binary>>) ->
     case suffix(Text, 6) of
         <<"\n\r\n"/utf16>> -> true;
         <<_:16, "\n\n"/utf16>> -> true;
         _ -> false
     end;
-css_blank_line(left, Text) when byte_size(Text) >= 4 ->
+css_blank_line(left, <<Text:4/bytes, _/binary>>) ->
     case suffix(Text, 4) of
         <<"\n\n"/utf16>> -> true;
         _ -> false
@@ -495,7 +472,7 @@ css_blank_line(right, <<"\n\n"/utf16, _>>) -> true;
 css_blank_line(right, <<"\n\r\n"/utf16, _>>) -> true;
 css_blank_line(right, <<"\r\n\n"/utf16, _>>) -> true;
 css_blank_line(right, <<"\r\n\r\n"/utf16, _>>) -> true;
-css_blank_line(_, _) -> false.
+css_blank_line(_, <<_/binary>>) -> false.
 
 c_upper(<<C:16>>) -> C >= $A andalso C =< $Z.
 c_lower(<<C:16>>) -> C >= $a andalso C =< $z.
@@ -519,11 +496,11 @@ c_space(<<16#202f:16>>) -> true;
 c_space(<<16#205f:16>>) -> true;
 c_space(<<16#3000:16>>) -> true;
 c_space(<<16#feff:16>>) -> true;
-c_space(_) -> false.
+c_space(<<_/binary>>) -> false.
 
 c_linebreak(<<"\n"/utf16>>) -> true;
 c_linebreak(<<"\r"/utf16>>) -> true;
-c_linebreak(_) -> false.
+c_linebreak(<<_/binary>>) -> false.
 
 -spec cleanup_merge(Diffs) -> Diffs
     when Diffs :: list(diff()).
@@ -688,13 +665,13 @@ ltc_munge(Text, Chars, Lookup, Hash, Max, I, {P, _L}) ->
 -spec half_match(Left :: binary(), Right :: binary()) -> #half_match{} | nomatch.
 
 half_match(Left, Right) when byte_size(Left) > byte_size(Right) ->
-    hm_prepare(left, Left, Right);
+    hm_prepare(Left, Right, left);
 half_match(Left, Right) ->
-    hm_prepare(right, Right, Left).
+    hm_prepare(Right, Left, right).
 
-hm_prepare(_, Long, Short) when byte_size(Long) < 8; byte_size(Short) * 2 < byte_size(Long) ->
+hm_prepare(<<Long/binary>>, <<Short/binary>>, _Longer) when byte_size(Long) < 8; byte_size(Short) * 2 < byte_size(Long) ->
     nomatch;
-hm_prepare(Longer, Long, Short) ->
+hm_prepare(<<Long/binary>>, <<Short/binary>>, Longer) ->
     Length = byte_size(Long),
     hm_join(
         Longer,
@@ -702,7 +679,7 @@ hm_prepare(Longer, Long, Short) ->
         hm_split(Long, Short, ceil(Length / 2 / 2))
     ).
 
-hm_split(Long, Short, I) ->
+hm_split(<<Long/binary>>, <<Short/binary>>, I) ->
     Seed = binary:part(Long, I * 2, floor(byte_size(Long) / 2 / 4)),
     Best = #half_match{
         l_prefix = <<"">>,
@@ -713,10 +690,16 @@ hm_split(Long, Short, I) ->
     },
     hm_split(Long, Short, I, Seed, Best, binary:match(Short, [Seed])).
 
-hm_split(Long, Short, I, Seed, Best, {JBytes, _L}) ->
+hm_split(<<Long/binary>>, <<Short/binary>>, I, Seed, Best, {JBytes, _L}) ->
     J = JBytes div 2,
-    PrefixLength = common_prefix(no_prefix(Long, I * 2), no_prefix(Short, J * 2)),
-    SuffixLength = common_suffix(prefix(Long, I * 2), prefix(Short, J * 2)),
+    {LP, LS} = split_binary(Long, I * 2),
+    {SP, SS} = split_binary(Short, J * 2),
+    % PrefixLength = common_prefix(no_prefix(Long, I * 2), no_prefix(Short, J * 2)),
+    % SuffixLength = common_suffix(prefix(Long, I * 2), prefix(Short, J * 2)),
+    % PrefixLength = common_prefix(LS, SS),
+    % SuffixLength = common_suffix(LP, SP),
+    PrefixLength = binary:longest_common_prefix([LS, SS]) div 2,
+    SuffixLength = binary:longest_common_suffix([LP, SP]) div 2,
     Best1 = case byte_size(Best#half_match.m_common) / 2 < PrefixLength + SuffixLength of
         true  -> #half_match{
             l_prefix =    prefix(Long,  (I - SuffixLength) * 2),
@@ -732,7 +715,7 @@ hm_split(Long, Short, I, Seed, Best, {JBytes, _L}) ->
         false -> Best
     end,
     hm_split(
-        Long, Short, I, Seed, Best1,
+        <<Long/binary>>, <<Short/binary>>, I, Seed, Best1,
         binary:match(Short, [Seed], [{scope, {(J + 1) * 2, byte_size(Short) - (J + 1) * 2}}])
     );
 hm_split(Long, _Short, _I, _Seed, #half_match{m_common = Common} = Best, nomatch)
@@ -761,7 +744,7 @@ hm_unswap(right, HalfMatch) -> #half_match{
 
 -spec common_prefix(Left :: binary(), Right :: binary()) -> non_neg_integer().
 
-common_prefix(Left, Right) ->
+common_prefix(<<Left/binary>>, <<Right/binary>>) ->
     CodeUnits = binary:longest_common_prefix([Left, Right]) div 2,
     cp_surrogate_shift(CodeUnits, char_type(suffix(prefix(Left, CodeUnits * 2), 2))).
 
@@ -770,7 +753,7 @@ cp_surrogate_shift(CodeUnits, _)              -> CodeUnits.
 
 -spec common_suffix(Left :: binary(), Right :: binary()) -> non_neg_integer().
 
-common_suffix(Left, Right) ->
+common_suffix(<<Left/binary>>, <<Right/binary>>) ->
     CodeUnits = binary:longest_common_suffix([Left, Right]) div 2,
     cs_surrogate_shift(CodeUnits, char_type(prefix(suffix(Left, CodeUnits * 2), 2))).
 
@@ -779,45 +762,42 @@ cs_surrogate_shift(CodeUnits, _)             -> CodeUnits.
 
 -spec common_overlap(Left :: binary(), Right :: binary()) -> non_neg_integer().
 
-common_overlap(Left, Right) ->
+common_overlap(<<Left/binary>>, <<Right/binary>>) ->
     common_overlap(Left, Right, 0, 2) div 2.
 
-common_overlap(Left, Right, Best, Length)
+common_overlap(<<Left/binary>>, <<Right/binary>>, Best, Length)
     when byte_size(Left) =< Length; byte_size(Right) =< Length ->
     Best;
-common_overlap(Left, Right, Best, Length) ->
+common_overlap(<<Left/binary>>, <<Right/binary>>, Best, Length) ->
     Suffix = suffix(Left, Length),
     co_scan(Left, Right, Best, Length, binary:match(Right, [Suffix])).
 
-co_scan(_Left, _Right, Best, _Length, nomatch) ->
+co_scan(<<_Left/binary>>, <<_Right/binary>>, Best, _Length, nomatch) ->
     Best;
-co_scan(Left, Right, _Best, Length, {0, Length}) ->
+co_scan(<<Left/binary>>, <<Right/binary>>, _Best, Length, {0, Length}) ->
     common_overlap(Left, Right, Length, Length + 2);
-co_scan(Left, Right, Best, Length, {P, Length}) ->
+co_scan(<<Left/binary>>, <<Right/binary>>, Best, Length, {P, Length}) ->
     co_scan(Left, Right, Best, Length, {P, suffix(Left, Length + P), prefix(Right, Length + P)});
-co_scan(Left, Right, _Best, Length, {P, Suffix, Prefix}) when Suffix == Prefix ->
+co_scan(<<Left/binary>>, <<Right/binary>>, _Best, Length, {P, Suffix, Prefix}) when Suffix == Prefix ->
     common_overlap(Left, Right, Length + P, Length + P + 2);
-co_scan(Left, Right, Best, Length, {P, _Suffix, _Prefix}) ->
+co_scan(<<Left/binary>>, <<Right/binary>>, Best, Length, {P, _Suffix, _Prefix}) ->
     common_overlap(Left, Right, Best, Length + P).
 
-prefix(_Binary, 0) -> <<"">>;
-prefix(Binary, Bytes) when byte_size(Binary) =< Bytes -> Binary;
-prefix(Binary, Bytes) -> binary:part(Binary, 0, Bytes).
+prefix(<<_Binary/binary>>, 0) -> <<"">>;
+% prefix(<<Binary/binary>>, Bytes) when byte_size(Binary) =< Bytes -> Binary;
+prefix(<<Binary/binary>>, Bytes) -> try binary:part(Binary, 0, Bytes) catch _:_ -> Binary end.
 
-suffix(_Binary, 0) -> <<"">>;
-suffix(Binary, Bytes) when byte_size(Binary) =< Bytes -> Binary;
-suffix(Binary, Bytes) -> binary:part(Binary, byte_size(Binary), -Bytes).
+suffix(<<_Binary/binary>>, 0) -> <<"">>;
+% suffix(<<Binary/binary>>, Bytes) when byte_size(Binary) =< Bytes -> Binary;
+suffix(<<Binary/binary>>, Bytes) -> try binary:part(Binary, byte_size(Binary), -Bytes) catch _:_ -> Binary end.
 
-no_prefix(Binary, 0) -> Binary;
-no_prefix(Binary, Bytes) when byte_size(Binary) =< Bytes -> <<>>;
-no_prefix(Binary, Bytes) -> binary:part(Binary, Bytes, byte_size(Binary) - Bytes).
+no_prefix(<<Binary/binary>>, 0) -> Binary;
+% no_prefix(<<Binary/binary>>, Bytes) when byte_size(Binary) =< Bytes -> <<>>;
+no_prefix(<<Binary/binary>>, Bytes) -> try binary:part(Binary, Bytes, byte_size(Binary) - Bytes) catch _:_ -> <<>> end.
 
-no_suffix(Binary, 0) -> Binary;
-no_suffix(Binary, Bytes) when byte_size(Binary) =< Bytes -> <<>>;
-no_suffix(Binary, Bytes) -> binary:part(Binary, 0, byte_size(Binary) - Bytes).
-
-utf16_at(Text, Index) when is_binary(Text), is_integer(Index) ->
-    binary:part(Text, Index * 2, 2).
+no_suffix(<<Binary/binary>>, 0) -> Binary;
+% no_suffix(<<Binary/binary>>, Bytes) when byte_size(Binary) =< Bytes -> <<>>;
+no_suffix(<<Binary/binary>>, Bytes) -> try binary:part(Binary, 0, byte_size(Binary) - Bytes) catch _:_ -> <<>> end.
 
 char_type(<<A:16>>) when A >= 16#D800, A =< 16#DBFF -> high_surrogate;
 char_type(<<A:16>>) when A >= 16#DC00, A =< 16#DFFF -> low_surrogate;
