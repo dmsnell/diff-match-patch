@@ -241,7 +241,10 @@ bisect_forward(#bisect_state{
     RanOffR  = X1 > LLength,
     RanOffB  = Y1 > RLength,
     K2Offset = VOffset + Delta - K1,
-    AtV2     = a_get(V2, K2Offset),
+    AtV2     = if
+        K2Offset >= 0, K2Offset < VLength -> a_get(V2, K2Offset);
+        true                              -> -1
+    end,
     X2       = LLength - AtV2,
     case if
         RanOffR             -> a_add(S, k1end, 2),
@@ -306,7 +309,10 @@ bisect_reverse(#bisect_state{
     RanOffL  = X2 > LLength,
     RanOffT  = Y2 > RLength,
     K1Offset = VOffset + Delta - K2,
-    AtV1     = a_get(V1, K1Offset),
+    AtV1     = if
+        K1Offset >= 0, K1Offset < VLength -> a_get(V1, K1Offset);
+        true                              -> -1
+    end,
     X1       = AtV1,
     Y1       = VOffset + X1 - K1Offset,
     X2Mirror = LLength - X2,
