@@ -125,7 +125,7 @@ compute(Longer, Left, Right, Long, Short) ->
             {Op, no_prefix(Long, P + L)}
         ]};
         nomatch -> if
-            byte_size(Short) ==  2 -> {diffs, [
+            byte_size(Short) == 2 -> {diffs, [
                 {delete, Left},
                 {insert, Right}
             ]};
@@ -163,8 +163,8 @@ bisect(Left, Right) ->
     VOffset = MaxD,
     % I don't understand why this +1 is necessary
     % but for short strings it crashes with OOB
-    V1      = atomics:new(VLength, [{signed, true}]),
-    V2      = atomics:new(VLength, [{signed, true}]),
+    V1      = atomics:new(VLength + 1, [{signed, true}]),
+    V2      = atomics:new(VLength + 1, [{signed, true}]),
     ok      = atomic_set(V1, -1),
     ok      = atomic_set(V2, -1),
     ok      = a_set(V1, VOffset + 1, 0),
@@ -205,7 +205,7 @@ bisect(Left, Right) ->
 bisect_d_loop(#bisect_state{max_d = MaxD}, D, _) when D >= MaxD ->
     timeout;
 bisect_d_loop(_Args, _D, {diffs, Diffs}) ->
-    Diffs;
+    {diffs, Diffs};
 bisect_d_loop(#bisect_state{state = S} = Args, D, continue_forward) ->
     bisect_d_loop(Args, D, bisect_forward(Args, D, -D + a_get(S, k1start), D - a_get(S, k1end)));
 bisect_d_loop(#bisect_state{state = S} = Args, D, continue_reverse) ->
