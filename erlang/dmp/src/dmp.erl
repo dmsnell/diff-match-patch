@@ -27,6 +27,20 @@
 -type diff_op() :: equal | delete | insert.
 -type diff() :: {diff_op(), binary()}.
 
+-record(bisect_state, {
+    left     :: binary(),
+    right    :: binary(),
+    l_length :: non_neg_integer(),
+    r_length :: non_neg_integer(),
+    v_length :: non_neg_integer(),
+    max_d    :: non_neg_integer(),
+    v1       :: atomics:atomics_ref(),
+    v2       :: atomics:atomics_ref(),
+    delta    :: integer(),
+    front    :: boolean(),
+    state    :: atomics:atomics_ref()
+}).
+
 -record(half_match, {
     l_prefix :: binary(),
     l_suffix :: binary(),
@@ -41,9 +55,207 @@
     lookup :: tuple()
 }).
 
+-export([main/2]).
+
 %% Interface functions
 
+main(<<>>, Right) ->
+    [{insert, Right}];
+main(Left, <<>>) ->
+    [{delete, Left}];
+main(Same, Same) ->
+    [{equal, Same}];
+main(Left, Right) ->
+    bisect(Left, Right).
+
 %% Internal functions
+
+bisect(Left, Right) ->
+    LLength = byte_size(Left) div 2,
+    RLength = byte_size(Right) div 2,
+    MaxD    = ceil((LLength + RLength + 1) / 2),
+    VLength = MaxD * 2,
+    % I don't understand why this +1 is necessary
+    % but for short strings it crashes with OOB
+    V1      = atomics:new(VLength + 1, [{signed, true}]),
+    V2      = atomics:new(VLength + 1, [{signed, true}]),
+    ok      = atomic_set(V1, -1),
+    ok      = atomic_set(V2, -1),
+    ok      = a_set(V1, MaxD + 1, 0),
+    ok      = a_set(V2, MaxD + 1, 0),
+    Delta   = LLength - RLength,
+    Front   = Delta rem 2 =/= 0,
+    % k1start, k1end, k2start, k2end
+    State   = atomics:new(4, [{signed, true}]),
+    case bisect_d_loop(#bisect_state{
+        left     = Left,
+        right    = Right,
+        l_length = LLength,
+        r_length = RLength,
+        v_length = VLength,
+        max_d    = MaxD,
+        v1       = V1,
+        v2       = V2,
+        delta    = Delta,
+        front    = Front,
+        state    = State
+    }, 0, continue_forward) of
+        timeout -> [{delete, Left}, {insert, Right}];
+        Diffs   -> Diffs
+    end.
+
+bisect_d_loop(#bisect_state{max_d = MaxD}, D, _) when D >= MaxD ->
+    timeout;
+bisect_d_loop(_Args, _D, {diffs, Diffs}) ->
+    Diffs;
+bisect_d_loop(#bisect_state{state = S} = Args, D, continue_forward) ->
+    bisect_d_loop(Args, D, bisect_forward(Args, D, -D + a_get(S, k1start), D - a_get(S, k1end)));
+bisect_d_loop(#bisect_state{state = S} = Args, D, continue_reverse) ->
+    bisect_d_loop(Args, D + 1, bisect_reverse(Args, D, -D + a_get(S, k2start), D - a_get(S, k2end))).
+
+bisect_forward(_Args, _D, K1, MaxK1) when K1 > MaxK1 ->
+    continue_reverse;
+bisect_forward(#bisect_state{
+    left     = Left,
+    right    = Right,
+    l_length = LLength,
+    r_length = RLength,
+    v_length = VLength,
+    delta    = Delta,
+    front    = Front,
+    max_d    = VOffset,
+    state    = S,
+    v1       = V1,
+    v2       = V2
+} = Args, D, K1, _MaxK1) ->
+    K1Offset = VOffset + K1,
+    {X0, Y0} = bisect_get_xy(K1, D, V1, K1Offset),
+    {X1, Y1} = bisect_advance_forward(Left, Right, LLength, RLength, X0, Y0),
+    ok       = a_set(V1, K1Offset, X1),
+    RanOffR  = X1 > LLength,
+    RanOffB  = Y1 > RLength,
+    K2Offset = VOffset + Delta - K1,
+    AtV2     = a_get(V2, K2Offset),
+    X2       = LLength - AtV2,
+    case if
+        RanOffR             -> a_add(S, k1end, 2),
+                               continue;
+        RanOffB             -> a_add(S, k1start, 2),
+                               continue;
+        not Front           -> continue;
+        K2Offset < 0        -> continue;
+        K2Offset >= VLength -> continue;
+        AtV2 == -1          -> continue;
+        X1 >= X2            -> bisect_split(Left, Right, X1, Y1);
+        true                -> continue
+    end of
+        continue            -> bisect_forward(Args, D, K1 + 2, D - a_get(S, k1end));
+        Diffs               -> {diffs, Diffs} 
+    end.
+
+bisect_advance_forward(_Left, _Right, LLength, RLength, X, Y)
+    when X >= LLength; Y >= RLength ->
+    {X, Y};
+bisect_advance_forward(Left, Right, LLength, RLength, X, Y) ->
+    case {utf16_at(Left, X), utf16_at(Right, Y)} of
+        {C, C} -> bisect_advance_forward(Left, Right, LLength, RLength, X + 1, Y + 1);
+        _      -> {X, Y}
+    end.
+
+bisect_reverse(_Args, _D, K2, MaxK2) when K2 > MaxK2 ->
+    continue_reverse;
+bisect_reverse(#bisect_state{
+    left     = Left,
+    right    = Right,
+    l_length = LLength,
+    r_length = RLength,
+    v_length = VLength,
+    delta    = Delta,
+    front    = Front,
+    max_d    = VOffset,
+    state    = S,
+    v1       = V1,
+    v2       = V2
+} = Args, D, K2, _MaxK2) ->
+    K2Offset = VOffset + K2,
+    {X0, Y0} = bisect_get_xy(K2, D, V2, K2Offset),
+    {X2, Y2} = bisect_advance_reverse(Left, Right, LLength, RLength, X0, Y0),
+    ok       = a_set(V2, K2Offset, X2),
+    RanOffL  = X2 > LLength,
+    RanOffT  = Y2 > RLength,
+    K1Offset = VOffset + Delta - K2,
+    AtV1     = a_get(V1, K1Offset),
+    X1       = AtV1,
+    Y1       = VOffset + X1 - K1Offset,
+    X2Mirror = LLength - X2,
+    case if
+        RanOffL             -> a_add(S, k2end, 2),
+                               continue;
+        RanOffT             -> a_add(S, k2start, 2),
+                               continue;
+        Front               -> continue;
+        K1Offset < 0        -> continue;
+        K1Offset >= VLength -> continue;
+        AtV1 == -1          -> continue;
+        X1 >= X2Mirror      -> bisect_split(Left, Right, X1, Y1);
+        true                -> continue
+    end of
+        continue            -> bisect_reverse(Args, D, K2 + 2, D - a_get(S, k2end));
+        Diffs               -> {diffs, Diffs} 
+    end.
+
+bisect_advance_reverse(_Left, _Right, LLength, RLength, X, Y)
+    when X >= LLength; Y >= RLength ->
+    {X, Y};
+bisect_advance_reverse(Left, Right, LLength, RLength, X, Y) ->
+    case {
+        utf16_at(Left, LLength - X - 1),
+        utf16_at(Right, RLength - Y - 1)
+    } of
+        {C, C} -> bisect_advance_reverse(Left, Right, LLength, RLength, X + 1, Y + 1);
+        _      -> {X, Y}
+    end.
+
+bisect_get_xy(K, D, V, KOffset) ->
+    Prev = a_get(V, KOffset - 1),
+    Next = a_get(V, KOffset + 1),
+    X = if
+        K == -D -> Next;
+        K =/= D andalso Prev < Next -> Next;
+        true -> Prev + 1
+    end,
+    {X, X - K}.
+
+bisect_split(Left, Right, X, Y) ->
+    LL =    prefix(Left,  X * 2),
+    LR = no_prefix(Left,  X * 2),
+    RL =    prefix(Right, Y * 2),
+    RR = no_prefix(Right, Y * 2),
+    lists:append(main(LL, RL), main(LR, RR)).
+
+bs_state_arg(k1start) -> 0;
+bs_state_arg(k1end)   -> 1;
+bs_state_arg(k2start) -> 2;
+bs_state_arg(k2end)   -> 3.
+
+a_add(Ref, Arg, Inc) when is_atom(Arg) -> a_add(Ref, bs_state_arg(Arg), Inc);
+a_add(Ref, Index, Inc) -> atomics:add(Ref, Index + 1, Inc).
+
+a_get(Ref, Arg) when is_atom(Arg) -> a_get(Ref, bs_state_arg(Arg));
+a_get(Ref, Index) -> atomics:get(Ref, Index + 1).
+
+a_set(Ref, Arg, Value) when is_atom(Arg) -> a_set(Ref, bs_state_arg(Arg), Value);
+a_set(Ref, Index, Value) -> atomics:put(Ref, Index + 1, Value).
+
+atomic_set(Ref, Value) ->
+    #{size := Size} = atomics:info(Ref),
+    atomic_set(Ref, Value, Size).
+
+atomic_set(_Ref, _Value, 0) ->
+    ok;
+atomic_set(Ref, Value, Index) ->
+    ok = atomics:put(Ref, Index, Value),
+    atomic_set(Ref, Value, Index - 1).
 
 -spec cleanup_semantic_lossless(Diffs) -> Diffs
     when Diffs :: list(diff()).
@@ -447,6 +659,9 @@ no_prefix(Binary, Bytes) -> binary:part(Binary, Bytes, byte_size(Binary) - Bytes
 no_suffix(Binary, 0) -> Binary;
 no_suffix(Binary, Bytes) when byte_size(Binary) =< Bytes -> <<>>;
 no_suffix(Binary, Bytes) -> binary:part(Binary, 0, byte_size(Binary) - Bytes).
+
+utf16_at(Text, Index) when is_binary(Text), is_integer(Index) ->
+    binary:part(Text, Index * 2, 2).
 
 char_type(<<A:16>>) when A >= 16#D800, A =< 16#DBFF -> high_surrogate;
 char_type(<<A:16>>) when A >= 16#DC00, A =< 16#DFFF -> low_surrogate;
