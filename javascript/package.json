@@ -1,0 +1,17 @@
+{
+  "name": "diff-match-patch",
+  "version": "1.0.3",
+  "description": "diff-patch-match fork with fixed surrogate pair processing",
+  "main": "diff_match_patch_uncompressed.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/feedyou-ai/diff-match-patch/tree/master/javascript"
+  },
+  "author": "Google inc. (https://github.com/google), modified by https://github.com/dmsnell and https://github.com/feedyou-ai/",
+  "license": "Apache-2.0"
+}

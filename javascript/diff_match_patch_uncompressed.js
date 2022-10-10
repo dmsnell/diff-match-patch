@@ -1340,11 +1340,19 @@ diff_match_patch.prototype.diff_levenshtein = function(diffs) {
 };
 
 diff_match_patch.prototype.isHighSurrogate = function(c) {
+  if(typeof c !== 'string'){
+    return false
+  }
+  
   var v = c.charCodeAt(0);
   return v >= 0xD800 && v <= 0xDBFF;
 }
 
 diff_match_patch.prototype.isLowSurrogate = function(c) {
+	if(typeof c !== 'string'){
+		return false
+	}
+  
   var v = c.charCodeAt(0);
   return v >= 0xDC00 && v <= 0xDFFF;
 }
@@ -1774,14 +1782,22 @@ diff_match_patch.prototype.patch_addContext_ = function(patch, text) {
   // Add one chunk for good luck.
   padding += this.Patch_Margin;
 
+	
+	
   // Add the prefix.
-  var prefix = text.substring(patch.start2 - padding, patch.start2);
+  var prefix = this.isLowSurrogate(text[patch.start2 - padding]) // Avoid splitting on non-character boundaries
+    ? text.substring(patch.start2 - padding - 1 , patch.start2)
+    : text.substring(patch.start2 - padding     , patch.start2);
+  
   if (prefix) {
     patch.diffs.unshift(new diff_match_patch.Diff(DIFF_EQUAL, prefix));
   }
+  
   // Add the suffix.
-  var suffix = text.substring(patch.start2 + patch.length1,
-                              patch.start2 + patch.length1 + padding);
+  var suffix = this.isHighSurrogate(text[patch.start2 + patch.length1 + padding]) // Avoid splitting on non-character boundaries
+    ? text.substring(patch.start2 + patch.length1, patch.start2 + patch.length1 + padding + 1)
+    : text.substring(patch.start2 + patch.length1, patch.start2 + patch.length1 + padding);
+    
   if (suffix) {
     patch.diffs.push(new diff_match_patch.Diff(DIFF_EQUAL, suffix));
   }
@@ -2215,6 +2231,46 @@ diff_match_patch.prototype.patch_splitMax = function(patches) {
   }
 };
 
+diff_match_patch.prototype.diffs_joinSurrogatePairs = function(diffs) {
+  var lastEnd;
+  var overwrittenDiffsCounter = 0;
+  
+  for (var x = 0 ; x < diffs.length ; x++) {
+    var thisDiff = diffs[x];
+    var thisTop = thisDiff[1][0];
+    var thisEnd = thisDiff[1][thisDiff[1].length - 1];
+    
+    if (0 === thisDiff[1].length) {
+      continue;
+    }
+    
+    // trap a trailing high-surrogate so we can
+    // distribute it to the successive edits
+    if (thisEnd && this.isHighSurrogate(thisEnd)) {
+      lastEnd = thisEnd;
+      thisDiff[1] = thisDiff[1].slice(0, -1);
+    }
+    
+    if (lastEnd && thisTop && this.isHighSurrogate(lastEnd) && this.isLowSurrogate(thisTop)) {
+      thisDiff[1] = lastEnd + thisDiff[1];
+    }
+    
+    if (0 === thisDiff[1].length) {
+      continue;
+    }
+    
+    diffs[overwrittenDiffsCounter] = thisDiff;
+    overwrittenDiffsCounter ++;
+  }
+  
+  return diffs.splice(0, overwrittenDiffsCounter)
+}
+
+diff_match_patch.prototype.patch_joinSurrogatePairs = function(patch) {
+  patch.diffs = this.diffs_joinSurrogatePairs(patch.diffs)
+  return patch
+}
+
 
 /**
  * Take a list of patches and return a textual representation.
@@ -2224,7 +2280,7 @@ diff_match_patch.prototype.patch_splitMax = function(patches) {
 diff_match_patch.prototype.patch_toText = function(patches) {
   var text = [];
   for (var x = 0; x < patches.length; x++) {
-    text[x] = patches[x];
+    text[x] = this.patch_joinSurrogatePairs(patches[x]);
   }
   return text.join('');
 };
@@ -2277,7 +2333,7 @@ diff_match_patch.prototype.patch_fromText = function(textline) {
     while (textPointer < text.length) {
       var sign = text[textPointer].charAt(0);
       try {
-        var line = decodeURI(text[textPointer].substring(1));
+        var line = this.decodeURI(text[textPointer].substring(1));
       } catch (ex) {
         // Malformed URI sequence.
         throw new Error('Illegal escape in patch_fromText: ' + line);
@@ -2367,18 +2423,8 @@ diff_match_patch.patch_obj.prototype.toString = function() {
   return text.join('').replace(/%20/g, ' ');
 };
 
-// CLOSURE:begin_strip
-// Lines below here will not be included in the Closure-compatible library.
-
-// Export these global variables so that they survive Google's JS compiler.
-// In a browser, 'this' will be 'window'.
-// Users of node.js should 'require' the uncompressed version since Google's
-// JS compiler may break the following exports for non-browser environments.
-/** @suppress {globalThis} */
-this['diff_match_patch'] = diff_match_patch;
-/** @suppress {globalThis} */
-this['DIFF_DELETE'] = DIFF_DELETE;
-/** @suppress {globalThis} */
-this['DIFF_INSERT'] = DIFF_INSERT;
-/** @suppress {globalThis} */
-this['DIFF_EQUAL'] = DIFF_EQUAL;
+module.exports = diff_match_patch;
+module.exports['diff_match_patch'] = diff_match_patch;
+module.exports['DIFF_DELETE'] = DIFF_DELETE;
+module.exports['DIFF_INSERT'] = DIFF_INSERT;
+module.exports['DIFF_EQUAL'] = DIFF_EQUAL;
