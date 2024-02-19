@@ -10,6 +10,7 @@
   ],
   "type": "module",
   "main": "index.js",
+  "types": "index.d.ts",
   "scripts": {
     "prepublishOnly": "npm test",
     "test": "node --test"
