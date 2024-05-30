@@ -1256,7 +1256,9 @@ class DiffMatchPatch {
           .replaceAll('&', '&amp;')
           .replaceAll('<', '&lt;')
           .replaceAll('>', '&gt;')
-          .replaceAll('\n', '&para;<br>');
+          .replaceAll('\n', '&para;<br>')
+          .replaceAll('\t', '&emsp;')
+          .replaceAll(' ', '&nbsp;');
       switch (aDiff.operation) {
         case Operation.insert:
           html.write('<ins style="background:#e6ffe6;">');

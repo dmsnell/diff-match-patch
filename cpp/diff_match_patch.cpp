@@ -1276,7 +1276,8 @@ QString diff_match_patch::diff_prettyHtml(const QList<Diff> &diffs) {
   foreach(Diff aDiff, diffs) {
     text = aDiff.text;
     text.replace("&", "&amp;").replace("<", "&lt;")
-        .replace(">", "&gt;").replace("\n", "&para;<br>");
+        .replace(">", "&gt;").replace("\n", "&para;<br>")
+        .replace("\t", "&emsp;").replace(" ", "&nbsp;");
     switch (aDiff.operation) {
       case INSERT:
         html += QString("<ins style=\"background:#e6ffe6;\">") + text

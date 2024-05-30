@@ -1338,7 +1338,7 @@ namespace DiffMatchPatch {
       StringBuilder html = new StringBuilder();
       foreach (Diff aDiff in diffs) {
         string text = aDiff.text.Replace("&", "&amp;").Replace("<", "&lt;")
-          .Replace(">", "&gt;").Replace("\n", "&para;<br>");
+          .Replace(">", "&gt;").Replace("\n", "&para;<br>").Replace("\t", "&emsp;").Replace(" ", "&nbsp;");
         switch (aDiff.operation) {
           case Operation.INSERT:
             html.Append("<ins style=\"background:#e6ffe6;\">").Append(text)

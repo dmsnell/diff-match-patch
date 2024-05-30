@@ -1239,6 +1239,8 @@ void splice(NSMutableArray *input, NSUInteger start, NSUInteger count, NSArray *
     [text replaceOccurrencesOfString:@"<" withString:@"&lt;" options:NSLiteralSearch range:NSMakeRange(0, text.length)];
     [text replaceOccurrencesOfString:@">" withString:@"&gt;" options:NSLiteralSearch range:NSMakeRange(0, text.length)];
     [text replaceOccurrencesOfString:@"\n" withString:@"&para;<br>" options:NSLiteralSearch range:NSMakeRange(0, text.length)];
+    [text replaceOccurrencesOfString:@"\t" withString:@"&emsp;" options:NSLiteralSearch range:NSMakeRange(0, text.length)];
+    [text replaceOccurrencesOfString:@" " withString:@"&nbsp;" options:NSLiteralSearch range:NSMakeRange(0, text.length)];
 
     switch (aDiff.operation) {
       case DIFF_INSERT:

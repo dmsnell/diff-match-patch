@@ -58,9 +58,10 @@ local function indexOf(a, b, start)
   return strfind(a, b, start, true)
 end
 
-local htmlEncode_pattern = '[&<>\n]'
+local htmlEncode_pattern = '[&<>\n\t ]'
 local htmlEncode_replace = {
-  ['&'] = '&amp;', ['<'] = '&lt;', ['>'] = '&gt;', ['\n'] = '&para;<br>'
+  ['&'] = '&amp;', ['<'] = '&lt;', ['>'] = '&gt;', ['\n'] = '&para;<br>',
+  ['\t'] = '&emsp;', [' '] = '&nbsp;'
 }
 
 -- Public API Functions
