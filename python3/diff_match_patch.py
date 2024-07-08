@@ -1274,6 +1274,8 @@ class diff_match_patch:
       Returns:
         Overall score for match (0.0 = good, 1.0 = bad).
       """
+      if (e == 0 and x == loc):
+        return 0.0
       accuracy = float(e) / len(pattern)
       proximity = abs(loc - x)
       if not self.Match_Distance:
@@ -1287,10 +1289,14 @@ class diff_match_patch:
     best_loc = text.find(pattern, loc)
     if best_loc != -1:
       score_threshold = min(match_bitapScore(0, best_loc), score_threshold)
+      if score_threshold == 0.0: # Can't improve this
+        return best_loc
       # What about in the other direction? (speedup)
       best_loc = text.rfind(pattern, loc + len(pattern))
       if best_loc != -1:
         score_threshold = min(match_bitapScore(0, best_loc), score_threshold)
+        if score_threshold == 0.0:
+          return best_loc
 
     # Initialise the bit arrays.
     matchmask = 1 << (len(pattern) - 1)
