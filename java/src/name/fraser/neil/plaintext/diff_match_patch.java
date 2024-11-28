@@ -138,7 +138,7 @@ public class diff_match_patch {
     if (Diff_Timeout <= 0) {
       deadline = Long.MAX_VALUE;
     } else {
-      deadline = System.currentTimeMillis() + (long) (Diff_Timeout * 1000);
+      deadline = System.nanoTime() + (long) (Diff_Timeout * 1000000000l);
     }
     return diff_main(text1, text2, checklines, deadline);
   }
@@ -151,7 +151,7 @@ public class diff_match_patch {
    * @param checklines Speedup flag.  If false, then don't run a
    *     line-level diff first to identify the changed areas.
    *     If true, then run a faster slightly less optimal diff.
-   * @param deadline Time when the diff should be complete by.  Used
+   * @param deadline Time in nanoseconds when the diff should be complete by.  Used
    *     internally for recursive calls.  Users should set DiffTimeout instead.
    * @return Linked List of Diff objects.
    */
@@ -382,7 +382,7 @@ public class diff_match_patch {
     int k2end = 0;
     for (int d = 0; d < max_d; d++) {
       // Bail out if deadline is reached.
-      if (System.currentTimeMillis() > deadline) {
+      if (System.nanoTime() > deadline) {
         break;
       }
 
