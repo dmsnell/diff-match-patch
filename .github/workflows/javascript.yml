@@ -1,0 +1,32 @@
+name: javascript
+
+on:
+  push:
+    paths:
+      - .github/workflows/javascript.yml
+      - javascript/**
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/javascript.yml
+      - javascript/**
+
+defaults:
+  run:
+    working-directory: javascript
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      ## Cache not needed because we have no dependencies.
+      ## If we need it, here's how
+      #          cache: npm
+      #          cache-dependency-path: 'javascript/package-lock.json'
+      - run: npm test
