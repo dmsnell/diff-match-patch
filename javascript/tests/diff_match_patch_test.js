@@ -655,6 +655,54 @@ function testDiffDelta() {
   assertEquivalent(diffs, dmp.diff_fromDelta('', delta));
 }
 
+function testUnpairedSurrogates() {
+  var prefix = 'a'.repeat(10);
+  var suffix = 'b'.repeat(18);
+  var surrogates = ['\ud83d', '\udc00'];
+  for (var x = 0; x < surrogates.length; x++) {
+    for (var operation = 0; operation < 2; operation++) {
+      var withSurrogate = prefix + surrogates[x] + suffix;
+      var withoutSurrogate = prefix + suffix;
+      var before = operation === 0 ? withSurrogate : withoutSurrogate;
+      var after = operation === 0 ? withoutSurrogate : withSurrogate;
+
+      var diffs = dmp.diff_main(before, after);
+      var delta = dmp.diff_toDelta(diffs);
+      if (operation === 1) {
+        assertTrue(delta.indexOf('%ED%') !== -1);
+      }
+      var decodedDiffs = dmp.diff_fromDelta(before, delta);
+      assertEquals(before, dmp.diff_text1(decodedDiffs));
+      assertEquals(after, dmp.diff_text2(decodedDiffs));
+
+      var patches = dmp.patch_make(before, after);
+      assertTrue(patches.length > 0);
+      assertEquivalent([after, [true]], dmp.patch_apply(patches, before));
+
+      var patchText = dmp.patch_toText(patches);
+      assertTrue(patchText.indexOf('%ED%') !== -1);
+      assertEquivalent([after, [true]], dmp.patch_apply(dmp.patch_fromText(patchText), before));
+    }
+  }
+
+  diffs = [[DIFF_EQUAL, '\ud83d'], [DIFF_DELETE, '\ude00'], [DIFF_INSERT, '\ude01']];
+  dmp.diff_cleanupSplitSurrogates(diffs);
+  assertEquals('\ud83d\ude00', dmp.diff_text1(diffs));
+  assertEquals('\ud83d\ude01', dmp.diff_text2(diffs));
+  assertEquivalent([[DIFF_DELETE, '\ud83d\ude00'], [DIFF_INSERT, '\ud83d\ude01']], diffs);
+
+  diffs = [[DIFF_EQUAL, '\ud83d'], [DIFF_DELETE, '\ude00']];
+  dmp.diff_cleanupSplitSurrogates(diffs);
+  assertEquals('\ud83d\ude00', dmp.diff_text1(diffs));
+  assertEquals('\ud83d', dmp.diff_text2(diffs));
+
+  before = '😀 %\n\ud83d middle \udc00 end';
+  after = '😀 %\n\udc00 middle \ud83d end';
+  patches = dmp.patch_make(before, after);
+  patchText = dmp.patch_toText(patches);
+  assertEquals(after, dmp.patch_apply(dmp.patch_fromText(patchText), before)[0]);
+}
+
 function testDiffXIndex() {
   // Translate a location in text1 to text2.
   // Translation on equality.
@@ -1138,6 +1186,7 @@ const tests = [
   'testDiffPrettyHtml',
   'testDiffText',
   'testDiffDelta',
+  'testUnpairedSurrogates',
   'testDiffXIndex',
   'testDiffLevenshtein',
   'testDiffBisect',
